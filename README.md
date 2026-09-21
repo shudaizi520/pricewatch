@@ -2,11 +2,11 @@
 
 给 TrueNAS 准备的小型价格监控网页：优先识别美国戴尔的 Alienware 商品，记录配置、美元价格与历史，变化时才通过飞书机器人通知。也支持部分提供标准结构化商品数据的其他商店。深浅色界面、单管理员、SQLite，不需要 Redis。
 
-> 已在 TrueNAS 25.10 安装并确认网页健康接口、首次注册页正常；从 TrueNAS 命令行请求参考戴尔页面返回 403，浏览器兜底仍待实测。**尚未验证戴尔价格和飞书实发**，不要据此做购买决策。首次使用请按下方验收步骤核对。
+> 已在 TrueNAS 25.10 安装。2026-09-21 从同一 NAS 验证：普通请求和无界面 Chromium 被美国戴尔商品页拒绝（HTTP 403），有界面 Chromium 可读取该页；PriceWatch 的完整抓取与解析流程在隔离验收容器中读到 SKU `aa18250_reg_01`、美元价格和已选硬件配置。正式网页健康接口正常。**飞书实发和网页添加商品仍待实际验收**；价格会变化，购买前请以戴尔网页为准。
 
 ## 在 TrueNAS 安装
 
-需要 x86-64 Docker/Compose、联网和一个可写数据集。i3-12100 可运行，但 Chromium 兜底会比普通抓取占用更多内存；实际峰值待 TrueNAS 测量。
+需要 x86-64 Docker/Compose、联网和一个可写数据集。i3-12100 可运行；为兼容美国戴尔商品页，镜像内含完整 Chromium 和虚拟显示，仍是单容器应用。浏览器兜底比普通抓取占用更多内存；实际峰值待 TrueNAS 测量。
 
 1. 将此项目放到 TrueNAS 可执行 Compose 的位置，并在 TrueNAS 创建一个专用持久数据集，例如 `/mnt/POOL/apps/pricewatch`。让容器用户 `10001:10001` 对该数据集有读写权限。不要把数据集放在 Git 仓库里。
 2. 复制 `.env.example` 为 `.env`；将 `PRICEWATCH_DATA_PATH` 改成上述绝对路径。用 `openssl rand -hex 32` 生成一次 `PRICEWATCH_APP_SECRET_KEY`，将结果只写入 `.env`，不要提交到 GitHub。**以后保持这个密钥不变**，否则已加密的飞书配置无法解密。
@@ -42,7 +42,7 @@ Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR �
 ## 状态与排查
 
 - `docker compose ps` 和 `docker compose logs --tail=100 pricewatch` 可看容器状态，`curl -f http://127.0.0.1:8080/healthz` 可看健康检查。日志不要包含完整飞书 Webhook；分享日志前仍建议检查脱敏。
-- 戴尔返回 403 或出现人机验证时，应用可能启动受限 Chromium 重试；不会绕过验证码。请从 TrueNAS 上先用普通浏览器确认网页能正常显示、价格是否与匿名/地区会话一致。
+- 戴尔返回 403 或出现人机验证时，应用会尝试受限的有界面 Chromium；不会代替用户完成验证码。若仍失败，请从 TrueNAS 所在网络用普通浏览器确认网页能正常显示，且价格与匿名/地区会话一致。站点策略可能再次变化，不能保证长期可抓取。
 - 反代登录循环一般与 HTTPS/外部地址及 Cookie 有关，检查 `PRICEWATCH_EXTERNAL_URL` 和反代转发头。
 - 忘记密码时，先停止服务；把密码写入权限为 600 的数据集文件，再运行 `docker compose run --rm --no-deps --entrypoint pricewatch pricewatch admin reset-password --username 用户名 --password-file /data/密码文件名`。重置后删除此明文文件，不要把密码写进命令历史。
 - 用 `docker stats` 记录真实空闲内存、浏览器检查峰值；用 `docker image ls` 记录镜像大小。目前尚未测量浏览器抓取峰值，不提供未经测量的数字。

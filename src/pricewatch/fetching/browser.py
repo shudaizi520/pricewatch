@@ -1,10 +1,12 @@
 """Short-lived Chromium fallback with an origin-pinned network policy."""
 
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from httpx import URL
 from playwright.async_api import Route, async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError, ProductAdapter
 from pricewatch.domain.products import ProductSnapshot
@@ -60,7 +62,7 @@ class BrowserFetcher:
         try:
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch(
-                    headless=True,
+                    headless=False,
                     args=[f"--host-resolver-rules=MAP {host} {address}"],
                 )
                 try:
@@ -77,6 +79,13 @@ class BrowserFetcher:
                             f"浏览器访问商品页面返回 HTTP {response.status}",
                             status_code=response.status,
                         )
+                    if host in {"www.dell.com", "dell.com"} and url.path.startswith(
+                        "/en-us/shop/"
+                    ):
+                        with suppress(PlaywrightTimeoutError):
+                            await page.wait_for_selector(
+                                ".option-grid-item .price.scoprice", timeout=10000
+                            )
                     html = await page.content()
                     body = html.encode("utf-8")
                     if len(body) > self.max_body_bytes:

@@ -35,6 +35,21 @@ def _visible(soup: BeautifulSoup, identifier: str) -> str | None:
     return element.get_text(" ", strip=True) if isinstance(element, Tag) else None
 
 
+def _selected_option(soup: BeautifulSoup, expression: str) -> str | None:
+    for card in soup.select(".option-grid-item"):
+        indicator = card.select_one(".price.scoprice")
+        title = card.select_one('[data-test-id="option-title"]')
+        if (
+            isinstance(indicator, Tag)
+            and indicator.get_text(" ", strip=True).casefold() == "selected"
+            and isinstance(title, Tag)
+        ):
+            name = title.get_text(" ", strip=True)
+            if re.search(expression, name, re.I):
+                return name
+    return None
+
+
 class DellUsAdapter:
     def supports(self, url: URL) -> bool:
         return url.host in {"dell.com", "www.dell.com"} and url.path.startswith("/en-us/")
@@ -58,14 +73,14 @@ class DellUsAdapter:
         offers = structured.get("offers")
         offer = offers if isinstance(offers, dict) else {}
         candidates: dict[str, Money] = {}
-        currency = _text(offer.get("priceCurrency"))
+        currency = _text(offer.get("priceCurrency")).upper()
         if offer.get("price") and currency:
             candidates["jsonld.offers.price"] = Money.from_decimal(currency, _text(offer["price"]))
         amount = soup.find("meta", attrs={"property": "product:price:amount"})
         meta_currency = soup.find("meta", attrs={"property": "product:price:currency"})
         if isinstance(amount, Tag) and isinstance(meta_currency, Tag):
             candidates["meta.product.price.amount"] = Money.from_decimal(
-                _text(meta_currency.get("content")), _text(amount.get("content"))
+                _text(meta_currency.get("content")).upper(), _text(amount.get("content"))
             )
         visible_price = _visible(soup, "sale-price")
         if visible_price:
@@ -94,15 +109,22 @@ class DellUsAdapter:
             raise ExtractionError("Dell product SKU is missing or invalid")
         description = _text(structured.get("description"))
         configuration = ProductConfiguration(
-            cpu=_visible(soup, "processor")
+            cpu=_selected_option(soup, r"Core\s*Ultra|Ryzen")
+            or _visible(soup, "processor")
             or _find_description(description, r"(?:Intel )?Core Ultra\s*\d+\s*[A-Z0-9]+"),
-            gpu=_visible(soup, "graphics")
+            gpu=_selected_option(soup, r"RTX\W*\d{4}|Radeon")
+            or _visible(soup, "graphics")
             or _find_description(
                 description, r"(?:NVIDIA )?(?:GeForce )?RTX\s*\d{4}(?:\s*\d+\s*GB)?"
             ),
-            memory=_visible(soup, "memory") or _find_description(description, r"\d+\s*GB\s*DDR\d+"),
-            storage=_visible(soup, "storage") or _find_description(description, r"\d+\s*TB\s*SSD"),
-            display=_visible(soup, "display")
+            memory=_selected_option(soup, r"\d+\s*GB.*\bDDR")
+            or _visible(soup, "memory")
+            or _find_description(description, r"\d+\s*GB\s*DDR\d+"),
+            storage=_selected_option(soup, r"\d+\s*TB.*(?:SSD|M\.2)")
+            or _visible(soup, "storage")
+            or _find_description(description, r"\d+\s*TB\s*SSD"),
+            display=_selected_option(soup, r'\d{2}\s*(?:"|″|inch)')
+            or _visible(soup, "display")
             or _find_description(description, r"\d+\s*(?:inch|\")\s*[A-Z0-9+]+\s*display"),
         )
         if not configuration.gpu or not (

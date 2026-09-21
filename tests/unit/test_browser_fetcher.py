@@ -67,6 +67,7 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
         chromium = None
 
         async def launch(self, **_kwargs):
+            assert _kwargs["headless"] is False
             return FakeBrowser()
 
     class FakePlaywrightContext:

@@ -41,6 +41,47 @@ def test_browser_fallback_markup_extracts_primary_price():
     assert snapshot.configuration.memory == "64 GB DDR5"
 
 
+def test_current_dell_selected_options_and_lowercase_currency():
+    html = '''
+    <html><head><link rel="canonical" href="https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250/aa18250_reg_01">
+    <script type="application/ld+json">{
+      "@type":"Product", "name":"Alienware 18 Area-51 Gaming Laptop",
+      "sku":"aa18250_reg_01", "description":"Gaming laptop",
+      "offers":{"priceCurrency":"usd", "price":"3999.99",
+      "availability":"https://schema.org/InStock"}
+    }</script></head>
+    <body><h1>Alienware 18 Area-51 Gaming Laptop</h1>
+    <div>Dell Price <span>$3,999.99</span></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">Intel Core Ultra 9 processor 290HX Plus</span>
+      <div class="price scoprice">Selected</div></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">NVIDIA GeForce RTX 5070 8 GB GDDR7</span>
+      <div class="price scoprice">Selected</div></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">32GB: 2x16GB, DDR5</span>
+      <div class="price scoprice">Selected</div></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">1TB M.2 2230 SSD</span>
+      <div class="price scoprice">Selected</div></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">18&quot;, WQXGA, 300Hz</span>
+      <div class="price scoprice">Selected</div></div>
+    <div class="option-grid-item">
+      <span data-test-id="option-title">NVIDIA GeForce RTX 5090 24 GB GDDR7</span>
+      <div class="price scoprice">+ $1,100.00</div></div>
+    </body></html>
+    '''
+    snapshot = DellUsAdapter().extract(page(html))
+    assert snapshot.price.currency == "USD"
+    assert snapshot.price.minor == 399999
+    assert snapshot.configuration.cpu == "Intel Core Ultra 9 processor 290HX Plus"
+    assert snapshot.configuration.gpu == "NVIDIA GeForce RTX 5070 8 GB GDDR7"
+    assert snapshot.configuration.memory == "32GB: 2x16GB, DDR5"
+    assert snapshot.configuration.storage == "1TB M.2 2230 SSD"
+    assert snapshot.configuration.display == '18", WQXGA, 300Hz'
+
+
 def test_conflicting_structured_current_prices_require_review():
     html = (
         (FIXTURES / "product.html")

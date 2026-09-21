@@ -21,10 +21,11 @@ def test_compose_single_service_persistent_data_and_healthcheck():
     assert service["restart"] == "unless-stopped"
 
 
-def test_image_non_root_one_worker_and_headless_chromium():
+def test_image_non_root_one_worker_and_graphical_chromium():
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "USER 10001:10001" in dockerfile
-    assert "--only-shell chromium" in dockerfile
+    assert "playwright install chromium" in dockerfile
+    assert "xvfb-run" in dockerfile
     assert "--workers 1" in dockerfile
     assert "python -m pricewatch.bootstrap" in dockerfile
 
