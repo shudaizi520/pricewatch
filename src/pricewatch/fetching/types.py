@@ -17,4 +17,3 @@ class AcquiredPage:
     @property
     def html(self) -> str:
         return self.body.decode("utf-8", errors="replace")
-
