@@ -80,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.backups = backups
     app.state.previews = {}
+    app.state.option_catalogs = {}
     secure_cookie = bool(
         resolved.external_url and str(resolved.external_url).startswith("https://")
     )

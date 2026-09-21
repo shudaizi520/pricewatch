@@ -16,6 +16,7 @@ from pricewatch.adapters.base import ExtractionError
 from pricewatch.db.models import Administrator, Observation, Product
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import Money, ProductSnapshot
+from pricewatch.fetching.dell_options import catalog_from_html
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
@@ -77,14 +78,17 @@ async def dashboard(request: Request) -> Response:
                             Observation.trusted.is_(True),
                             Observation.currency == latest.currency,
                         )
-                    ) if latest else None,
+                    )
+                    if latest
+                    else None,
                     "sparkline": _sparkline(observations),
                 }
             )
         usd_lows = [
             card["lowest"]
             for card in cards
-            if card["latest"] is not None and card["latest"].currency == "USD"
+            if card["latest"] is not None
+            and card["latest"].currency == "USD"
             and card["lowest"] is not None
         ]
     return templates.TemplateResponse(
@@ -99,29 +103,101 @@ async def product_add(request: Request) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="product_add.html",
-        context=_context(request, preview=None, error=None),
+        context=_context(request, preview=None, error=None, catalog=None),
     )
 
 
-@router.post("/products/preview", response_class=HTMLResponse)
-async def product_preview(
+@router.post("/products/options", response_class=HTMLResponse)
+async def product_options(
     request: Request, url: str = Form(), submitted_csrf: str = Form(alias="csrf_token")
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     admin = require_admin(request)
     try:
         target = validate_public_url(url)
+        if target.host not in {"dell.com", "www.dell.com"} or not target.path.startswith(
+            "/en-us/shop/"
+        ):
+            raise ValueError("配置选择仅支持美国戴尔商品页")
         pipeline = request.app.state.check_service.pipeline
         if pipeline is None:
             raise ValueError("检查器尚未启动")
-        _, snapshot = await pipeline.acquire(
-            target, request.app.state.check_service.registry.for_url(target)
+        acquired = await pipeline.browser.fetch(target)
+        catalog = catalog_from_html(acquired.html)
+        if not catalog:
+            raise ValueError("戴尔页面未提供可选配置")
+    except (UnsafeUrlError, ValueError, RuntimeError, AcquisitionError) as error:
+        return templates.TemplateResponse(
+            request=request,
+            name="product_add.html",
+            context=_context(request, preview=None, catalog=None, error=str(error), url=url),
+            status_code=422,
         )
+    request.app.state.option_catalogs = {
+        key: value
+        for key, value in request.app.state.option_catalogs.items()
+        if value[3] >= datetime.now(UTC) and value[0] != admin.id
+    }
+    token = secrets.token_urlsafe(32)
+    request.app.state.option_catalogs[token] = (
+        admin.id,
+        str(target),
+        catalog,
+        datetime.now(UTC) + timedelta(minutes=15),
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="product_add.html",
+        context=_context(
+            request, preview=None, catalog=catalog, catalog_token=token, url=url, error=None
+        ),
+    )
+
+
+@router.post("/products/preview", response_class=HTMLResponse)
+async def product_preview(
+    request: Request,
+    url: str = Form(),
+    catalog_token: str = Form(""),
+    submitted_csrf: str = Form(alias="csrf_token"),
+) -> Response:
+    verify_csrf(request, submitted_csrf)
+    admin = require_admin(request)
+    try:
+        target = validate_public_url(url)
+        recipe: dict[str, str] | None = None
+        if catalog_token:
+            entry = request.app.state.option_catalogs.get(catalog_token)
+            if (
+                entry is None
+                or entry[0] != admin.id
+                or entry[1] != str(target)
+                or entry[3] < datetime.now(UTC)
+            ):
+                raise ValueError("配置选择已过期, 请重新读取")
+            form = await request.form()
+            recipe = {}
+            for group, choices in entry[2].items():
+                label = str(form.get(f"option__{group}", ""))
+                if label:
+                    if label not in choices:
+                        raise ValueError(f"选项已不可用: {group} / {label}")
+                    recipe[group] = label
+            if not recipe:
+                recipe = None
+        pipeline = request.app.state.check_service.pipeline
+        if pipeline is None:
+            raise ValueError("检查器尚未启动")
+        adapter = request.app.state.check_service.registry.for_url(target)
+        if recipe:
+            _, snapshot = await pipeline.acquire(target, adapter, dell_selection=recipe)
+        else:
+            _, snapshot = await pipeline.acquire(target, adapter)
     except (UnsafeUrlError, ValueError, RuntimeError, AcquisitionError, ExtractionError) as error:
         return templates.TemplateResponse(
             request=request,
             name="product_add.html",
-            context=_context(request, preview=None, error=str(error)),
+            context=_context(request, preview=None, catalog=None, error=str(error), url=url),
             status_code=422,
         )
     request.app.state.previews = {
@@ -134,11 +210,20 @@ async def product_preview(
         admin.id,
         snapshot,
         datetime.now(UTC) + timedelta(minutes=15),
+        recipe,
     )
     return templates.TemplateResponse(
         request=request,
         name="product_add.html",
-        context=_context(request, preview=snapshot, preview_token=token, error=None),
+        context=_context(
+            request,
+            preview=snapshot,
+            preview_token=token,
+            error=None,
+            catalog=None,
+            recipe=recipe,
+            url=url,
+        ),
     )
 
 
@@ -152,13 +237,23 @@ async def product_confirm(
     if entry is None or entry[0] != admin.id or entry[2] < datetime.now(UTC):
         raise HTTPException(400, "预览已过期 请重新获取")
     snapshot: ProductSnapshot = entry[1]
+    recipe: dict[str, str] | None = entry[3] if len(entry) > 3 else None
     with request.app.state.session_factory.begin() as session:
+        candidates = session.scalars(
+            select(Product).where(
+                Product.source_site == snapshot.identity.site, Product.sku == snapshot.identity.sku
+            )
+        ).all()
+        for existing in candidates:
+            if existing.dell_selection == recipe and existing.status != "archived":
+                return RedirectResponse(f"/products/{existing.id}", status_code=303)
         product = Product(
             source_site=snapshot.identity.site,
             requested_url=snapshot.canonical_url,
             canonical_url=snapshot.canonical_url,
             name=snapshot.name,
             sku=snapshot.identity.sku,
+            dell_selection=recipe,
         )
         session.add(product)
         session.flush()

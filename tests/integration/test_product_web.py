@@ -1,4 +1,6 @@
 import re
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -106,6 +108,118 @@ async def test_preview_does_not_create_product_until_confirm(admin_client, monke
     assert confirmed.status_code == 303
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(Product.id))) == 1
+
+
+@pytest.mark.anyio
+async def test_same_url_can_create_distinct_selected_configurations(admin_client, monkeypatch):
+    app = admin_client._transport.app
+    from pricewatch.fetching.safety import validate_public_url
+    from pricewatch.web import routes_products
+
+    monkeypatch.setattr(
+        routes_products,
+        "validate_public_url",
+        lambda address: validate_public_url(address, lambda host: ["8.8.8.8"]),
+    )
+    address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
+
+    class FakeBrowser:
+        async def fetch(self, _url):
+            from pricewatch.fetching.types import AcquiredPage
+
+            return AcquiredPage(
+                address,
+                address,
+                200,
+                (Path(__file__).parents[1] / "fixtures" / "dell" / "options.html").read_bytes(),
+                {},
+                "browser",
+                datetime.now(UTC),
+            )
+
+    class FakePipeline:
+        browser = FakeBrowser()
+
+        async def acquire(self, url, _adapter, dell_selection=None):
+            gpu = (dell_selection or {}).get("Graphics Card", "RTX 5070")
+            price = 509999 if "5090" in gpu else 399999
+            return None, ProductSnapshot(
+                ProductIdentity("dell-us", "aa18250_reg_01"),
+                str(url),
+                "Alienware 18 Area-51",
+                ProductConfiguration(cpu="Core Ultra 9", gpu=gpu),
+                Money("USD", price),
+            )
+
+    app.state.check_service.pipeline = FakePipeline()
+    page = await admin_client.get("/products/new")
+    options = await admin_client.post(
+        "/products/options", data={"url": address, "csrf_token": csrf(page.text)}
+    )
+    assert options.status_code == 200
+    assert "5090" in options.text
+    token = re.search(r'name="catalog_token" value="([^"]+)"', options.text).group(1)
+    for gpu, expected in [
+        ("NVIDIA® GeForce RTX™ 5070 8 GB GDDR7", 399999),
+        ("NVIDIA® GeForce RTX™ 5090 24 GB GDDR7", 509999),
+    ]:
+        preview = await admin_client.post(
+            "/products/preview",
+            data={
+                "url": address,
+                "catalog_token": token,
+                "option__Graphics Card": gpu,
+                "csrf_token": csrf(options.text),
+            },
+        )
+        assert preview.status_code == 200
+        assert f"${expected / 100:.2f}" in preview.text
+        preview_token = re.search(r'name="preview_token" value="([^"]+)"', preview.text).group(1)
+        confirmed = await admin_client.post(
+            "/products/confirm",
+            data={"preview_token": preview_token, "csrf_token": csrf(preview.text)},
+        )
+        assert confirmed.status_code == 303
+    with app.state.session_factory() as session:
+        cards = session.scalars(select(Product).order_by(Product.id)).all()
+        assert len(cards) == 2
+        assert "5070" in cards[0].dell_selection["Graphics Card"]
+        assert "5090" in cards[1].dell_selection["Graphics Card"]
+
+
+@pytest.mark.anyio
+async def test_invalid_selected_configuration_cannot_create_card(admin_client, monkeypatch):
+    app = admin_client._transport.app
+    from pricewatch.fetching.safety import validate_public_url
+    from pricewatch.web import routes_products
+
+    monkeypatch.setattr(
+        routes_products,
+        "validate_public_url",
+        lambda address: validate_public_url(address, lambda host: ["8.8.8.8"]),
+    )
+    address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
+    app.state.option_catalogs = {
+        "known": (
+            1,
+            address,
+            {"Graphics Card": ["RTX 5070"]},
+            datetime.now(UTC) + timedelta(minutes=15),
+        )
+    }
+    page = await admin_client.get("/products/new")
+    result = await admin_client.post(
+        "/products/preview",
+        data={
+            "url": address,
+            "catalog_token": "known",
+            "option__Graphics Card": "RTX 5090",
+            "csrf_token": csrf(page.text),
+        },
+    )
+    assert result.status_code == 422
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count(Product.id))) == 0
 
 
 @pytest.mark.anyio
