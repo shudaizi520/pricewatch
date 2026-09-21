@@ -421,6 +421,80 @@ async def test_detail_price_chart_has_ordered_points(admin_client):
 
 
 @pytest.mark.anyio
+async def test_archive_restore_and_permanent_delete_are_explicit(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        item = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/x", name="Area-51"
+        )
+        session.add(item)
+        session.flush()
+        product_id = item.id
+        session.add(
+            Observation(
+                product_id=product_id,
+                currency="USD",
+                price_minor=399999,
+                configuration_fingerprint="a",
+            )
+        )
+    dashboard = await admin_client.get("/")
+    assert "移除" in dashboard.text
+    archived = await admin_client.post(
+        f"/products/{product_id}/archive", data={"csrf_token": csrf(dashboard.text)}
+    )
+    assert archived.status_code == 303
+    listing = await admin_client.get("/products/archived")
+    assert "Area-51" in listing.text and "恢复" in listing.text
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count(Observation.id))) == 1
+    restored = await admin_client.post(
+        f"/products/{product_id}/restore", data={"csrf_token": csrf(listing.text)}
+    )
+    assert restored.status_code == 303
+    with app.state.session_factory() as session:
+        assert session.get(Product, product_id).status == "paused"
+    detail = await admin_client.get(f"/products/{product_id}")
+    await admin_client.post(
+        f"/products/{product_id}/archive", data={"csrf_token": csrf(detail.text)}
+    )
+    deletion = await admin_client.get(f"/products/{product_id}/delete")
+    wrong = await admin_client.post(
+        f"/products/{product_id}/delete",
+        data={
+            "confirmation": "wrong",
+            "csrf_token": csrf(deletion.text),
+        },
+    )
+    assert wrong.status_code == 400
+    deleted = await admin_client.post(
+        f"/products/{product_id}/delete",
+        data={
+            "confirmation": "DELETE",
+            "csrf_token": csrf(deletion.text),
+        },
+    )
+    assert deleted.status_code == 303
+    with app.state.session_factory() as session:
+        assert session.get(Product, product_id) is None
+
+
+@pytest.mark.anyio
+async def test_all_entry_pages_link_the_browser_icon(admin_client):
+    for url in ("/", "/products/new", "/login"):
+        page = await admin_client.get(url)
+        assert 'rel="icon"' in page.text
+        assert "/static/mark.svg" in page.text
+
+
+@pytest.mark.anyio
+async def test_initialization_page_links_browser_icon(client):
+    page = await client.get("/initialize")
+    assert 'rel="icon"' in page.text
+    assert "/static/mark.svg" in page.text
+
+
+@pytest.mark.anyio
 async def test_configuration_review_shows_difference_and_can_split(admin_client):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:

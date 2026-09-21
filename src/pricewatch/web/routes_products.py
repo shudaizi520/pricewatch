@@ -287,6 +287,22 @@ async def product_confirm(
     return RedirectResponse(f"/products/{product_id}", status_code=303)
 
 
+@router.get("/products/archived", response_class=HTMLResponse)
+async def archived_products(request: Request) -> Response:
+    require_admin(request)
+    with request.app.state.session_factory() as session:
+        products = session.scalars(
+            select(Product).where(Product.status == "archived").order_by(Product.id.desc())
+        ).all()
+        for product in products:
+            session.expunge(product)
+    return templates.TemplateResponse(
+        request=request,
+        name="product_archived.html",
+        context=_context(request, products=products),
+    )
+
+
 @router.get("/products/{product_id}", response_class=HTMLResponse)
 async def product_detail(request: Request, product_id: int) -> Response:
     product = _product(request, product_id)
@@ -386,6 +402,21 @@ async def archive_product(
         assert product is not None
         product.status = "archived"
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/products/{product_id}/restore")
+async def restore_product(
+    request: Request, product_id: int, submitted_csrf: str = Form(alias="csrf_token")
+) -> Response:
+    verify_csrf(request, submitted_csrf)
+    _product(request, product_id)
+    with request.app.state.session_factory.begin() as session:
+        product = session.get(Product, product_id)
+        if product is None or product.status != "archived":
+            raise HTTPException(409)
+        product.status = "paused"
+        product.next_check_at = None
+    return RedirectResponse(f"/products/{product_id}", status_code=303)
 
 
 @router.get("/products/{product_id}/delete", response_class=HTMLResponse)

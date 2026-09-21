@@ -22,7 +22,7 @@
     {% if card.configuration_rows %}<dl class="config-rows">{% for label, value in card.configuration_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% else %}<p class="config">正在识别商品配置</p>{% endif %}
     <div class="price-block"><div><span class="price">{% if latest %}{{ '$' if latest.currency == 'USD' else latest.currency ~ ' ' }}{{ '%.2f' | format(latest.price_minor / 100) }}{% else %}—{% endif %}</span></div><svg class="sparkline" viewBox="0 0 135 48" aria-label="近期价格走势" role="img"><polyline points="{{ card.sparkline }}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
     </button>
-    <div class="card-bottom"><span>{% if card.lowest is not none %}最低 {{ '$' if latest.currency == 'USD' else latest.currency ~ ' ' }}{{ '%.2f' | format(card.lowest / 100) }}{% else %}尚无价格记录{% endif %}</span><a class="link" href="/products/{{ product.id }}">查看详情 ↗</a></div>
+    <div class="card-bottom"><span>{% if card.lowest is not none %}最低 {{ '$' if latest.currency == 'USD' else latest.currency ~ ' ' }}{{ '%.2f' | format(card.lowest / 100) }}{% else %}尚无价格记录{% endif %}</span><div class="card-actions"><a class="link" href="/products/{{ product.id }}">查看详情 ↗</a><form action="/products/{{ product.id }}/archive" method="post" data-confirm="移除这张卡片？历史记录会保留。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">移除</button></form></div></div>
   </article>
 {% endfor %}
 </section>
