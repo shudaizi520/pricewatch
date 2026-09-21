@@ -20,4 +20,3 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
     app_secret_key: SecretStr = Field(min_length=32)
     external_url: AnyHttpUrl | None = None
-
