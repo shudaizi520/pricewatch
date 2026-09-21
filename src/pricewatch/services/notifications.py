@@ -75,16 +75,39 @@ def format_message(event: DomainEvent, product: Product) -> str:
     lines = [f"{name} · {labels.get(event.kind, event.kind)}", str(config)]
     previous = event.old.get("price_minor")
     current = event.new.get("price_minor")
+    currency = event.new.get("currency") or "USD"
+    price_prefix = "$" if currency == "USD" else f"{currency} "
     if isinstance(current, int):
-        price = f"${current / 100:,.2f}"
+        price = f"{price_prefix}{current / 100:,.2f}"
         if isinstance(previous, int):
             delta = current - previous
-            lines.append(f"${previous / 100:,.2f} → {price} ({delta / 100:+,.2f} USD)")
+            lines.append(
+                f"{price_prefix}{previous / 100:,.2f} → {price} ({delta / 100:+,.2f} {currency})"
+            )
         else:
             lines.append(price)
+        if (
+            product.notify_mode == "target_or_change"
+            and product.target_price_minor is not None
+            and current <= product.target_price_minor
+            and (not isinstance(previous, int) or previous > product.target_price_minor)
+        ):
+            lines.append("目标价已达到")
     stock = event.new.get("availability")
     if stock:
-        lines.append(f"库存: {stock}")
+        old_stock = event.old.get("availability")
+        lines.append(f"库存: {old_stock} → {stock}" if old_stock else f"库存: {stock}")
+    if event.kind == "offer_changed":
+        for key, label in (("coupon", "优惠码"), ("discount", "优惠")):
+            old_value, new_value = event.old.get(key), event.new.get(key)
+            if old_value != new_value:
+                lines.append(f"{label}: {old_value or '无'} → {new_value or '无'}")
+    if event.kind == "configuration_changed":
+        old_description = event.old.get("summary") or event.old.get("name") or event.old.get("sku")
+        new_description = event.new.get("summary") or event.new.get("name") or event.new.get("sku")
+        if old_description or new_description:
+            lines.append(f"原配置: {old_description or '未知'}")
+            lines.append(f"新配置: {new_description or '未知'}")
     lines.extend([f"北京时间 {time}", product.canonical_url or product.requested_url])
     return "\n".join(lines)
 
@@ -146,14 +169,15 @@ class NotificationService:
         with self.factory() as session:
             identifiers = session.scalars(
                 select(NotificationDelivery.id).where(
-                    NotificationDelivery.status == "failed", NotificationDelivery.attempts < 3
+                    NotificationDelivery.status.in_(("failed", "pending")),
+                    NotificationDelivery.attempts < 3,
                 )
             ).all()
         delivered = 0
         for identifier in identifiers:
             with self.factory.begin() as session:
                 row = session.get(NotificationDelivery, identifier)
-                if row is None or row.status != "failed" or not row.message_text:
+                if row is None or row.status not in ("failed", "pending") or not row.message_text:
                     continue
                 row.attempts += 1
                 row.status = "pending"

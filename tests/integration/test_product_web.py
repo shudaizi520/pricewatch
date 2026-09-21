@@ -180,3 +180,85 @@ async def test_confirm_configuration_adopts_new_baseline(admin_client):
     outcome = checker.accept_snapshot(product_id, observation("RTX 5080", 280000))
     assert outcome.product.status == "active"
     assert outcome.events == []
+
+
+@pytest.mark.anyio
+async def test_dashboard_lowest_price_uses_entire_history(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(product)
+        session.flush()
+        for price in [100000, *([200000] * 35)]:
+            session.add(
+                Observation(
+                    product_id=product.id,
+                    currency="USD",
+                    price_minor=price,
+                    configuration_fingerprint="a",
+                )
+            )
+    page = await admin_client.get("/")
+    assert "最低 $1000.00" in page.text
+
+
+@pytest.mark.anyio
+async def test_non_usd_prices_are_not_displayed_as_dollars_or_mixed_in_overview(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(source_site="generic", requested_url="https://example.com/laptop")
+        session.add(product)
+        session.flush()
+        product_id = product.id
+        session.add(
+            Observation(
+                product_id=product_id,
+                currency="EUR",
+                price_minor=199900,
+                configuration_fingerprint="a",
+            )
+        )
+    dashboard = (await admin_client.get("/")).text
+    detail = (await admin_client.get(f"/products/{product_id}")).text
+    assert "EUR 1999.00" in dashboard
+    assert "EUR 1999.00" in detail
+    assert "$1999.00" not in dashboard + detail
+    assert "美元最低价" in dashboard
+    assert "最低 $1999.00" not in dashboard
+
+
+@pytest.mark.anyio
+async def test_configuration_review_shows_difference_and_can_split(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/x", sku="sku-1"
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    def observed(gpu):
+        return ProductSnapshot(
+            ProductIdentity("dell-us", "sku-1"),
+            "https://www.dell.com/x",
+            "Alienware",
+            ProductConfiguration(gpu=gpu),
+            Money("USD", 200000),
+        )
+
+    checker = app.state.check_service
+    checker.accept_snapshot(product_id, observed("RTX 5090"))
+    checker.accept_snapshot(product_id, observed("RTX 5080"))
+    page = await admin_client.get(f"/products/{product_id}")
+    assert "RTX 5090" in page.text
+    assert "RTX 5080" in page.text
+    assert "作为新商品" in page.text
+    response = await admin_client.post(
+        f"/products/{product_id}/confirm-configuration",
+        data={"action": "separate", "csrf_token": csrf(page.text)},
+    )
+    assert response.status_code == 303
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count(Product.id))) == 2
+        assert session.get(Product, product_id).status == "paused"

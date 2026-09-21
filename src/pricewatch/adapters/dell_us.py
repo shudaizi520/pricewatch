@@ -105,6 +105,10 @@ class DellUsAdapter:
             display=_visible(soup, "display")
             or _find_description(description, r"\d+\s*(?:inch|\")\s*[A-Z0-9+]+\s*display"),
         )
+        if not configuration.gpu or not (
+            configuration.cpu or configuration.memory or configuration.storage
+        ):
+            raise ExtractionError("Dell hardware configuration is incomplete")
         heading = soup.find("h1")
         name = _text(structured.get("name")) or (
             heading.get_text(" ", strip=True) if isinstance(heading, Tag) else ""
@@ -117,12 +121,28 @@ class DellUsAdapter:
         )
         if re.search(r"OutOfStock|Out of stock", availability_text, re.I):
             availability = "out_of_stock"
+        list_price = None
+        original_price = _visible(soup, "list-price")
+        if original_price:
+            try:
+                parsed_list_price = Money.from_decimal(
+                    "USD", original_price.replace("$", "").replace(",", "").strip()
+                )
+                if parsed_list_price.minor > price.minor:
+                    list_price = parsed_list_price
+            except ValueError:
+                pass
+        discount = _visible(soup, "discount")
+        coupon = _visible(soup, "coupon")
         return ProductSnapshot(
             identity=ProductIdentity("dell-us", sku=sku),
             canonical_url=canonical,
             name=name,
             configuration=configuration,
             price=price,
+            list_price=list_price,
+            discount_text=discount[:240] if discount else None,
+            coupon_text=coupon[:500] if coupon else None,
             availability=availability,
             evidence={"price": source, "sku": "jsonld.sku" if structured.get("sku") else "url"},
             confidence=Decimal("0.95") if source != "visible.purchase_price" else Decimal("0.80"),

@@ -15,20 +15,33 @@ from pricewatch.fetching.types import AcquiredPage
 
 class BrowserFetcher:
     def __init__(
-        self, resolver: Resolver = system_resolver, max_body_bytes: int = 8 * 1024 * 1024
+        self,
+        resolver: Resolver = system_resolver,
+        max_body_bytes: int = 8 * 1024 * 1024,
+        subresource_fetcher: HttpFetcher | None = None,
     ) -> None:
         self.resolver = resolver
         self.max_body_bytes = max_body_bytes
+        self.subresource_fetcher = subresource_fetcher or HttpFetcher(resolver=resolver)
 
     async def handle_route(self, route: Route, expected_host: str) -> None:
         try:
             url = URL(route.request.url)
-            if url.host != expected_host:
+            public_addresses(url, self.resolver)
+            if url.host == expected_host:
+                await route.continue_()
+                return
+            if url.scheme != "https" or route.request.resource_type not in ("script", "stylesheet"):
                 await route.abort()
                 return
-            public_addresses(url, self.resolver)
-            await route.continue_()
-        except (UnsafeUrlError, ValueError):
+            resource = await self.subresource_fetcher.fetch(url)
+            allowed_headers = {
+                key: value
+                for key, value in resource.headers.items()
+                if key.lower() in ("content-type", "access-control-allow-origin")
+            }
+            await route.fulfill(status=resource.status, body=resource.body, headers=allowed_headers)
+        except (AcquisitionError, UnsafeUrlError, ValueError):
             await route.abort()
 
     async def fetch(

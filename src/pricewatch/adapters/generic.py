@@ -62,6 +62,9 @@ class GenericAdapter:
             if isinstance(canonical, Tag) and canonical.get("href")
             else page.final_url
         )
+        parsed = URL(canonical_url)
+        if parsed.scheme not in ("http", "https") or parsed.host != URL(page.final_url).host:
+            canonical_url = page.final_url
         return ProductSnapshot(
             ProductIdentity(
                 URL(page.final_url).host or "other",

@@ -122,3 +122,81 @@ def test_failed_delivery_can_retry_after_restart(environment):
     assert restarted.retry_failed() == 1
     assert "$2,900.00" in successful.messages[0]
     assert restarted.retry_failed() == 0
+
+
+def test_interrupted_pending_delivery_is_retried(environment):
+    factory, product_id = environment
+    event = price_event(product_id)
+    with factory.begin() as session:
+        session.add(
+            NotificationDelivery(
+                product_id=product_id,
+                event_key=event.key(),
+                event_type=event.kind,
+                status="pending",
+                attempts=1,
+                message_text="之前排队的通知",
+            )
+        )
+    transport = FakeTransport((True,))
+    service = NotificationService(
+        factory, SecretStr("feishu://0123456789abcdef0123456789abcdef"), transport
+    )
+    assert service.retry_failed() == 1
+    assert transport.messages == ["之前排队的通知"]
+
+
+def test_target_price_is_called_out_in_existing_change_message(environment):
+    factory, product_id = environment
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.target_price_minor = 295000
+        product.notify_mode = "target_or_change"
+    transport = FakeTransport()
+    service = NotificationService(
+        factory, SecretStr("feishu://0123456789abcdef0123456789abcdef"), transport
+    )
+    service.deliver(price_event(product_id))
+    assert "目标价已达到" in transport.messages[0]
+    assert transport.calls == 1
+
+
+def test_offer_and_stock_messages_show_what_changed(environment):
+    factory, product_id = environment
+    with factory() as session:
+        product = session.get(Product, product_id)
+        offer = DomainEvent(
+            product_id,
+            "offer_changed",
+            datetime(2026, 9, 21, 2, tzinfo=UTC),
+            {"coupon": None, "discount": "Save $100"},
+            {"coupon": "SAVE10", "discount": "Save $200"},
+        )
+        stock = DomainEvent(
+            product_id,
+            "stock_changed",
+            datetime(2026, 9, 21, 3, tzinfo=UTC),
+            {"availability": "out_of_stock"},
+            {"availability": "in_stock"},
+        )
+        from pricewatch.services.notifications import format_message
+
+        assert "SAVE10" in format_message(offer, product)
+        assert "Save $100" in format_message(offer, product)
+        assert "out_of_stock → in_stock" in format_message(stock, product)
+
+
+def test_non_usd_price_is_not_labeled_as_dollars(environment):
+    factory, product_id = environment
+    with factory() as session:
+        product = session.get(Product, product_id)
+        event = DomainEvent(
+            product_id,
+            "price_changed",
+            datetime(2026, 9, 21, 2, tzinfo=UTC),
+            {"price_minor": 300000},
+            {"price_minor": 290000, "currency": "EUR"},
+        )
+        from pricewatch.services.notifications import format_message
+
+        assert "EUR 2,900.00" in format_message(event, product)

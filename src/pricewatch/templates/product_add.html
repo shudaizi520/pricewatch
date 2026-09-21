@@ -14,7 +14,7 @@
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 </section>
 {% if preview %}
-<section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2><p class="config">{{ preview.configuration.summary() or '配置尚未识别' }}</p><div class="preview-price">${{ '%.2f' | format(preview.price.minor / 100) }} <small>{{ preview.price.currency }}</small></div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
+<section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2><p class="config">{{ preview.configuration.summary() or '配置尚未识别' }}</p><div class="preview-price">{{ '$' if preview.price.currency == 'USD' else preview.price.currency ~ ' ' }}{{ '%.2f' | format(preview.price.minor / 100) }}</div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
   <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并开始监控</button></form>
 </section>
 {% endif %}

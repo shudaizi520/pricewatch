@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import func, select
 
 from pricewatch.db.base import Base
-from pricewatch.db.models import Observation, Product
+from pricewatch.db.models import NotificationDelivery, Observation, Product
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
 from pricewatch.services.checks import CheckService
@@ -99,6 +99,44 @@ def test_failure_alerts_once_at_three_and_recovers_once(check_service):
     ]
     with factory() as session:
         assert session.scalar(select(func.count(Observation.id))) == 1
+
+
+def test_generic_without_sku_pauses_if_product_name_changes(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        item = Product(
+            source_site="www.hp.com", requested_url="https://www.hp.com/shop/laptop", name="OMEN 16"
+        )
+        session.add(item)
+        session.flush()
+        product_id = item.id
+    service = CheckService(factory)
+
+    def generic(name, amount):
+        return ProductSnapshot(
+            ProductIdentity("www.hp.com"),
+            "https://www.hp.com/shop/laptop",
+            name,
+            ProductConfiguration(),
+            Money("USD", amount),
+        )
+
+    service.accept_snapshot(product_id, generic("OMEN 16", 200000))
+    outcome = service.accept_snapshot(product_id, generic("Victus 16", 150000))
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+    engine.dispose()
+
+
+def test_initial_event_is_durable_even_before_webhook_configured(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, snapshot())
+    with factory() as session:
+        deliveries = session.scalars(select(NotificationDelivery)).all()
+        assert len(deliveries) == 1
+        assert deliveries[0].status == "pending"
+        assert "$2,999.99" in deliveries[0].message_text
 
 
 @pytest.mark.anyio

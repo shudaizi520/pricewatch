@@ -10,11 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.adapters.registry import AdapterRegistry
-from pricewatch.db.models import CheckRun, Observation, Product
+from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline
-from pricewatch.services.notifications import NotificationService
+from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
 
@@ -53,6 +53,21 @@ class CheckService:
             for event in events:
                 self.notifier.deliver(event)
 
+    @staticmethod
+    def _queue_events(session: Session, product: Product, events: list[DomainEvent]) -> None:
+        if product.notifications_enabled:
+            for event in events:
+                session.add(
+                    NotificationDelivery(
+                        product_id=product.id,
+                        event_key=event.key(),
+                        event_type=event.kind,
+                        status="pending",
+                        attempts=0,
+                        message_text=format_message(event, product),
+                    )
+                )
+
     def accept_snapshot(
         self,
         product_id: int,
@@ -79,7 +94,33 @@ class CheckService:
                 .limit(1)
             )
             fingerprint = snapshot.configuration.fingerprint()
-            if product.sku and snapshot.identity.sku and product.sku != snapshot.identity.sku:
+            identity_drift = snapshot.identity.site != product.source_site or (
+                product.source_site != "dell-us"
+                and previous is not None
+                and (
+                    (
+                        product.name is not None
+                        and product.name.casefold() != snapshot.name.casefold()
+                    )
+                    or (
+                        not product.sku
+                        and product.canonical_url is not None
+                        and product.canonical_url != snapshot.canonical_url
+                    )
+                )
+            )
+            if identity_drift:
+                product.status = "needs_attention"
+                events.append(
+                    DomainEvent(
+                        product_id,
+                        "configuration_changed",
+                        now,
+                        {"name": product.name, "url": product.canonical_url},
+                        {"name": snapshot.name, "url": snapshot.canonical_url},
+                    )
+                )
+            elif product.sku and snapshot.identity.sku and product.sku != snapshot.identity.sku:
                 product.status = "needs_attention"
                 events.append(
                     DomainEvent(
@@ -97,8 +138,11 @@ class CheckService:
                         product_id,
                         "configuration_changed",
                         now,
-                        {"fingerprint": previous.configuration_fingerprint},
-                        {"fingerprint": fingerprint},
+                        {
+                            "fingerprint": previous.configuration_fingerprint,
+                            "summary": (previous.configuration or {}).get("summary"),
+                        },
+                        {"fingerprint": fingerprint, "summary": snapshot.configuration.summary()},
                     )
                 )
             else:
@@ -135,7 +179,10 @@ class CheckService:
                                     "price_changed",
                                     now,
                                     {"price_minor": previous.price_minor},
-                                    {"price_minor": snapshot.price.minor},
+                                    {
+                                        "price_minor": snapshot.price.minor,
+                                        "currency": snapshot.price.currency,
+                                    },
                                 )
                             )
                         if previous.availability != snapshot.availability:
@@ -218,13 +265,17 @@ class CheckService:
                                 "summary": snapshot.configuration.summary(),
                                 "sku": snapshot.identity.sku,
                                 "canonical_url": snapshot.canonical_url,
+                                "name": snapshot.name,
                             },
                             evidence=snapshot.evidence,
                             observed_at=now,
                             trusted=False,
                         )
                     )
-                elif pending is not None:
+                elif (
+                    pending is not None
+                    and (pending.configuration or {}).get("name") == snapshot.name
+                ):
                     events = []
             product.last_checked_at = now
             session.add(
@@ -235,6 +286,7 @@ class CheckService:
                     created_at=now,
                 )
             )
+            self._queue_events(session, product, events)
             session.flush()
             session.expunge(product)
         self._notify(events)
@@ -267,6 +319,7 @@ class CheckService:
                     created_at=now,
                 )
             )
+            self._queue_events(session, product, events)
             session.flush()
             session.expunge(product)
         self._notify(events)

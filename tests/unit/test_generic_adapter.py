@@ -48,3 +48,13 @@ def test_generic_adapter_rejects_price_without_currency():
     )
     with pytest.raises(ExtractionError):
         GenericAdapter().extract(page(html))
+
+
+def test_relative_or_cross_site_canonical_is_not_adopted():
+    product = (
+        '<script type="application/ld+json">{"@type":"Product","name":"OMEN",'
+        '"offers":{"price":"2999.99","priceCurrency":"USD"}}</script>'
+    )
+    for href in ("/another-product", "https://example.com/other"):
+        html = f'<link rel="canonical" href="{href}">{product}'
+        assert GenericAdapter().extract(page(html)).canonical_url == page(html).final_url

@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 import pytest
 from httpx import URL
 
 from pricewatch.fetching.browser import BrowserFetcher
 from pricewatch.fetching.http import AcquisitionError
+from pricewatch.fetching.types import AcquiredPage
 
 
 class FakeRequest:
@@ -36,3 +39,41 @@ async def test_browser_failure_is_categorized():
     fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
     with pytest.raises(AcquisitionError):
         await fetcher.fetch(URL("https://shop.example/item"), browser_factory=lambda: None)
+
+
+@pytest.mark.anyio
+async def test_cross_site_script_uses_safe_fetcher_then_fulfills():
+    class ScriptRequest:
+        url = "https://static.example.net/product.js"
+        resource_type = "script"
+
+    class ScriptRoute:
+        request = ScriptRequest()
+        response = None
+        aborted = False
+
+        async def abort(self):
+            self.aborted = True
+
+        async def fulfill(self, **kwargs):
+            self.response = kwargs
+
+    class SafeFetcher:
+        async def fetch(self, url):
+            assert url.host == "static.example.net"
+            return AcquiredPage(
+                str(url),
+                str(url),
+                200,
+                b"window.product=1",
+                {"content-type": "application/javascript"},
+                "http",
+                datetime.now(UTC),
+            )
+
+    route = ScriptRoute()
+    await BrowserFetcher(
+        resolver=lambda _: ["93.184.216.34"], subresource_fetcher=SafeFetcher()
+    ).handle_route(route, "shop.example")
+    assert route.response["body"] == b"window.product=1"
+    assert not route.aborted

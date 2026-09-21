@@ -41,7 +41,7 @@ class BackupService:
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
-        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as connection:
             if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("备份数据库校验失败")
         return BackupManifest(digest.hexdigest(), path.stat().st_size)
@@ -59,6 +59,12 @@ class BackupService:
                 closing(sqlite3.connect(str(self.database))) as source,
                 closing(sqlite3.connect(str(temporary))) as target,
             ):
+                try:
+                    version_row = source.execute(
+                        "SELECT version_num FROM alembic_version"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    version_row = None
                 source.backup(target)
             with temporary.open("rb") as stream:
                 os.fsync(stream.fileno())
@@ -68,7 +74,7 @@ class BackupService:
                 record = BackupRecord(
                     filename=filename,
                     reason=reason,
-                    schema_version="current",
+                    schema_version=version_row[0] if version_row else "unversioned",
                     checksum=manifest.checksum,
                 )
                 session.add(record)
@@ -91,6 +97,8 @@ class BackupService:
                     session.delete(record)
 
     def restore(self, path: Path, confirm_checksum: str) -> None:
+        if path.resolve() == self.database.resolve():
+            raise ValueError("Cannot restore a database from the same database")
         actual = self.verify(path)
         if actual.checksum != confirm_checksum:
             raise ValueError("备份校验码不匹配")

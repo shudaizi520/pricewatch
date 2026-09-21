@@ -10,10 +10,11 @@ from pathlib import Path
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from pricewatch.adapters.base import ExtractionError
 from pricewatch.db.models import Administrator, Observation, Product
+from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import Money, ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
@@ -65,16 +66,31 @@ async def dashboard(request: Request) -> Response:
                 .order_by(Observation.observed_at.desc())
                 .limit(30)
             ).all()
+            latest = observations[0] if observations else None
             cards.append(
                 {
                     "product": product,
-                    "latest": observations[0] if observations else None,
-                    "lowest": min((row.price_minor for row in observations), default=None),
+                    "latest": latest,
+                    "lowest": session.scalar(
+                        select(func.min(Observation.price_minor)).where(
+                            Observation.product_id == product.id,
+                            Observation.trusted.is_(True),
+                            Observation.currency == latest.currency,
+                        )
+                    ) if latest else None,
                     "sparkline": _sparkline(observations),
                 }
             )
+        usd_lows = [
+            card["lowest"]
+            for card in cards
+            if card["latest"] is not None and card["latest"].currency == "USD"
+            and card["lowest"] is not None
+        ]
     return templates.TemplateResponse(
-        request=request, name="dashboard.html", context=_context(request, cards=cards)
+        request=request,
+        name="dashboard.html",
+        context=_context(request, cards=cards, usd_low=min(usd_lows) if usd_lows else None),
     )
 
 
@@ -109,7 +125,8 @@ async def product_preview(
             status_code=422,
         )
     request.app.state.previews = {
-        key: value for key, value in request.app.state.previews.items()
+        key: value
+        for key, value in request.app.state.previews.items()
         if value[2] >= datetime.now(UTC) and value[0] != admin.id
     }
     token = secrets.token_urlsafe(32)
@@ -161,10 +178,16 @@ async def product_detail(request: Request, product_id: int) -> Response:
             .order_by(Observation.observed_at.desc())
             .limit(100)
         ).all()
+        pending = session.scalar(
+            select(Observation)
+            .where(Observation.product_id == product_id, Observation.trusted.is_(False))
+            .order_by(Observation.observed_at.desc(), Observation.id.desc())
+            .limit(1)
+        )
     return templates.TemplateResponse(
         request=request,
         name="product_detail.html",
-        context=_context(request, product=product, history=history),
+        context=_context(request, product=product, history=history, pending=pending),
     )
 
 
@@ -268,10 +291,17 @@ async def delete_product(
 
 @router.post("/products/{product_id}/confirm-configuration")
 async def confirm_configuration(
-    request: Request, product_id: int, submitted_csrf: str = Form(alias="csrf_token")
+    request: Request,
+    product_id: int,
+    action: str = Form("adopt"),
+    submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
+    if action not in ("adopt", "separate"):
+        raise HTTPException(422)
+    initial_event = None
+    target_product_id = product_id
     with request.app.state.session_factory.begin() as session:
         product = session.get(Product, product_id)
         assert product is not None
@@ -285,16 +315,51 @@ async def confirm_configuration(
         )
         if pending is None:
             raise HTTPException(409, "没有待确认的新配置")
-        pending.trusted = True
-        product.configuration = {"summary": (pending.configuration or {}).get("summary", "")}
-        product.configuration_fingerprint = pending.configuration_fingerprint
-        product.sku = (pending.configuration or {}).get("sku") or product.sku
-        product.canonical_url = (pending.configuration or {}).get(
-            "canonical_url"
-        ) or product.canonical_url
-        product.last_success_at = pending.observed_at
-        product.status = "active"
-    return RedirectResponse(f"/products/{product_id}", status_code=303)
+        if action == "separate":
+            fresh = Product(
+                source_site=product.source_site,
+                requested_url=(pending.configuration or {}).get("canonical_url")
+                or product.requested_url,
+                canonical_url=(pending.configuration or {}).get("canonical_url")
+                or product.canonical_url,
+                name=(pending.configuration or {}).get("name") or product.name,
+                sku=(pending.configuration or {}).get("sku"),
+                configuration={"summary": (pending.configuration or {}).get("summary", "")},
+                configuration_fingerprint=pending.configuration_fingerprint,
+                check_interval_hours=product.check_interval_hours,
+                last_checked_at=pending.observed_at,
+                last_success_at=pending.observed_at,
+            )
+            session.add(fresh)
+            session.flush()
+            pending.product_id = fresh.id
+            pending.trusted = True
+            product.status = "paused"
+            target_product_id = fresh.id
+            initial_event = DomainEvent(
+                fresh.id,
+                "initial_observation",
+                datetime.now(UTC),
+                {},
+                {"price_minor": pending.price_minor, "currency": pending.currency},
+            )
+            request.app.state.check_service._queue_events(session, fresh, [initial_event])
+        else:
+            pending.trusted = True
+            product.configuration = {"summary": (pending.configuration or {}).get("summary", "")}
+            product.configuration_fingerprint = pending.configuration_fingerprint
+            product.sku = (pending.configuration or {}).get("sku") or product.sku
+            product.name = (pending.configuration or {}).get("name") or product.name
+            product.canonical_url = (pending.configuration or {}).get(
+                "canonical_url"
+            ) or product.canonical_url
+            product.last_success_at = pending.observed_at
+            product.status = "active"
+    if action == "separate":
+        request.app.state.scheduler.schedule_product(target_product_id)
+        if initial_event is not None:
+            request.app.state.check_service._notify([initial_event])
+    return RedirectResponse(f"/products/{target_product_id}", status_code=303)
 
 
 @router.get("/products/{product_id}/history.csv")

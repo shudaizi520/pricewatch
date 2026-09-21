@@ -24,6 +24,7 @@ def test_sqlite_backup_checksum_and_restore_round_trip(storage):
         session.add(Product(source_site="dell-us", requested_url="https://www.dell.com/x"))
     service = BackupService(factory, settings.data_dir)
     record = service.create("manual")
+    assert record.schema_version == "unversioned"
     path = settings.data_dir / "backups" / record.filename
     assert service.verify(path).checksum == record.checksum
     with factory.begin() as session:
@@ -93,3 +94,11 @@ def test_backup_rotation_keeps_recent_daily_and_weekly(storage):
         weekly = session.scalars(select(BackupRecord).where(BackupRecord.reason == "weekly")).all()
         assert len(daily) == 7
         assert len(weekly) == 4
+
+
+def test_restore_rejects_current_database_as_its_own_source(storage):
+    _, factory, settings = storage
+    service = BackupService(factory, settings.data_dir)
+    path = settings.data_dir / "pricewatch.db"
+    with pytest.raises(ValueError, match="same database"):
+        service.restore(path, service.verify(path).checksum)
