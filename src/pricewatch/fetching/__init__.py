@@ -1,0 +1,1 @@
+"""Page acquisition package."""

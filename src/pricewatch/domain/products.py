@@ -1,0 +1,86 @@
+"""Immutable product identities, configurations and prices."""
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
+
+
+def _normalize(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"[^\w]", "", value.casefold(), flags=re.UNICODE)
+
+
+@dataclass(frozen=True, slots=True)
+class Money:
+    currency: str
+    minor: int
+
+    def __post_init__(self) -> None:
+        if type(self.minor) is not int or self.minor < 0:
+            raise TypeError("minor must be a non-negative integer")
+        if not re.fullmatch(r"[A-Z]{3}", self.currency):
+            raise ValueError("currency must be a three-letter ISO code")
+
+    @classmethod
+    def from_decimal(cls, currency: str, amount: str | Decimal) -> "Money":
+        decimal = Decimal(amount)
+        if (
+            not decimal.is_finite()
+            or decimal < 0
+            or decimal * 100 != (decimal * 100).to_integral_value()
+        ):
+            raise ValueError("invalid money amount")
+        return cls(currency, int(decimal * 100))
+
+
+@dataclass(frozen=True, slots=True)
+class ProductIdentity:
+    site: str
+    sku: str | None = None
+    model: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProductConfiguration:
+    cpu: str | None = None
+    gpu: str | None = None
+    memory: str | None = None
+    storage: str | None = None
+    display: str | None = None
+    os: str | None = None
+    extras: dict[str, str] = field(default_factory=dict)
+
+    def fingerprint(self) -> str:
+        parts: dict[str, object] = {
+            key: _normalize(getattr(self, key))
+            for key in ("cpu", "gpu", "memory", "storage", "display", "os")
+        }
+        parts["extras"] = {key: _normalize(value) for key, value in sorted(self.extras.items())}
+        payload = json.dumps(parts, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def summary(self) -> str:
+        return " · ".join(
+            value
+            for value in (self.cpu, self.gpu, self.memory, self.storage, self.display)
+            if value
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductSnapshot:
+    identity: ProductIdentity
+    canonical_url: str
+    name: str
+    configuration: ProductConfiguration
+    price: Money
+    list_price: Money | None = None
+    discount_text: str | None = None
+    coupon_text: str | None = None
+    availability: str = "unknown"
+    evidence: dict[str, Any] = field(default_factory=dict)
+    confidence: Decimal = Decimal("1")

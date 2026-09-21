@@ -1,0 +1,1 @@
+"""PriceWatch domain types."""
