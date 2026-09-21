@@ -167,8 +167,14 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
             return Locator(self.page, self.group, labels[self.group])
 
     class Accept:
-        async def wait_for(self, **_kwargs):
-            raise TimeoutError()
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+        async def is_visible(self):
+            return False
 
     class Page:
         def __init__(self):
@@ -181,7 +187,7 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
         async def evaluate(self, _script):
             return f"Dell Price ${self.price / 100:,.2f}"
 
-        def get_by_role(self, role, name, exact=True):
+        def get_by_role(self, role, name=None, exact=True):
             return Wrappers(self, name) if role == "group" else Accept()
 
     async def catalog(_page):
@@ -201,3 +207,84 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
         ({"Graphics Card": "RTX 5090"}, 399999, True),
         ({"Power Supply": "360W"}, 509999, True),
     ]
+
+
+@pytest.mark.anyio
+async def test_late_spec_dependency_dialog_is_accepted(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    class Accept:
+        def __init__(self, page):
+            self.page = page
+
+        async def wait_for(self, **_kwargs):
+            raise TimeoutError()
+
+        async def is_visible(self):
+            self.page.polls += 1
+            return self.page.clicked and self.page.polls >= 4
+
+        async def click(self):
+            self.page.selected = "RTX 5090"
+
+    class Locator:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        async def count(self):
+            return 1
+
+        def nth(self, _index):
+            return self
+
+        async def inner_text(self):
+            return "RTX 5090"
+
+        async def click(self):
+            self.page.clicked = True
+
+    class Dialog:
+        def __init__(self, page):
+            self.page = page
+
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Accept(self.page)
+
+    class Page:
+        def __init__(self):
+            self.selected = "RTX 5070"
+            self.clicked = False
+            self.polls = 0
+
+        async def content(self):
+            return json.dumps({"Graphics Card": self.selected})
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def get_by_role(self, role, **_kwargs):
+            return Locator(self) if role == "group" else Dialog(self)
+
+    async def catalog(_page):
+        return {"Graphics Card": ["RTX 5090"]}
+
+    async def quote(page, _recipe, _baseline, changed):
+        assert changed
+        return ConfiguredOffer({"Graphics Card": page.selected}, 509999)
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    monkeypatch.setattr(dell_options, "settled_offer", quote)
+    page = Page()
+    result = await apply_selection(page, {"Graphics Card": "RTX 5090"})
+    assert result.price_minor == 509999
+    assert page.polls >= 4

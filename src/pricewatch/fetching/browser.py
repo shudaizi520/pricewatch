@@ -5,7 +5,8 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 
 from httpx import URL
-from playwright.async_api import Route, async_playwright
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page, Response, Route, async_playwright
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError, ProductAdapter
@@ -37,6 +38,16 @@ DELL_READY_SCRIPT = r"""() => {
   if (!offer || offer.priceCurrency?.toUpperCase() !== 'USD' || !visible) return false;
   return Math.abs(Number(offer.price) - Number(visible[1].replaceAll(',', ''))) < 0.005;
 }"""
+
+
+async def navigate_with_retry(page: Page, url: str) -> Response | None:
+    try:
+        return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except PlaywrightError as error:
+        if "net::ERR_NETWORK_CHANGED" not in str(error):
+            raise
+        await page.wait_for_timeout(500)
+        return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
 
 class BrowserFetcher:
@@ -116,9 +127,7 @@ class BrowserFetcher:
                     page = await context.new_page()
                     if host not in {"www.dell.com", "dell.com"}:
                         await page.route("**/*", lambda route: self.handle_route(route, host))
-                    response = await page.goto(
-                        str(url), wait_until="domcontentloaded", timeout=30000
-                    )
+                    response = await navigate_with_retry(page, str(url))
                     if response is None:
                         raise AcquisitionError("浏览器未收到商品页面响应")
                     if response.status >= 400:

@@ -2,10 +2,11 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import URL
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError
-from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher
+from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher, navigate_with_retry
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import AcquiredPage
 
@@ -26,6 +27,41 @@ class FakeRoute:
 
     async def continue_(self):
         raise AssertionError("private request was allowed")
+
+
+@pytest.mark.anyio
+async def test_navigation_retries_once_when_network_changes():
+    class Page:
+        def __init__(self):
+            self.attempts = 0
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        async def goto(self, *_args, **_kwargs):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise PlaywrightError("Page.goto: net::ERR_NETWORK_CHANGED")
+            return "loaded"
+
+    page = Page()
+    assert await navigate_with_retry(page, "https://www.dell.com/example") == "loaded"
+    assert page.attempts == 2
+
+
+@pytest.mark.anyio
+async def test_navigation_does_not_retry_a_blocked_page():
+    class Page:
+        attempts = 0
+
+        async def goto(self, *_args, **_kwargs):
+            self.attempts += 1
+            raise PlaywrightError("Page.goto: net::ERR_BLOCKED_BY_CLIENT")
+
+    page = Page()
+    with pytest.raises(PlaywrightError, match="ERR_BLOCKED_BY_CLIENT"):
+        await navigate_with_retry(page, "https://www.dell.com/example")
+    assert page.attempts == 1
 
 
 @pytest.mark.anyio

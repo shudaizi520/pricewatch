@@ -133,14 +133,14 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
         if len(matching) != 1:
             raise ValueError(f"戴尔配置定位失败: {group} / {label}")
         await matching[0].locator('[role="button"]').click()
-        accept = page.get_by_role("button", name="Accept", exact=True)
-        try:
-            await accept.wait_for(state="visible", timeout=1500)
-        except Exception:
-            pass
-        else:
-            await accept.click()
-        for _ in range(30):
+        accept = (
+            page.get_by_role("dialog")
+            .filter(has_text="Spec changes required")
+            .get_by_role("button", name="Accept", exact=True)
+        )
+        for _ in range(40):
+            if await accept.is_visible():
+                await accept.click()
             if selected_from_html(await page.content()).get(group) == label:
                 break
             await page.wait_for_timeout(500)
