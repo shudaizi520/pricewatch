@@ -464,6 +464,8 @@ async def confirm_configuration(
         assert product is not None
         if product.status != "needs_attention":
             raise HTTPException(409)
+        if action == "separate" and product.dell_selection:
+            raise HTTPException(409, "此卡片已绑定戴尔配置; 请从添加商品创建另一张配置卡片")
         pending = session.scalar(
             select(Observation)
             .where(Observation.product_id == product_id, Observation.trusted.is_(False))
@@ -472,16 +474,20 @@ async def confirm_configuration(
         )
         if pending is None:
             raise HTTPException(409, "没有待确认的新配置")
+        pending_configuration = pending.configuration or {}
+        structured_configuration = {
+            key: value
+            for key, value in pending_configuration.items()
+            if key not in ("sku", "canonical_url", "name")
+        }
         if action == "separate":
             fresh = Product(
                 source_site=product.source_site,
-                requested_url=(pending.configuration or {}).get("canonical_url")
-                or product.requested_url,
-                canonical_url=(pending.configuration or {}).get("canonical_url")
-                or product.canonical_url,
-                name=(pending.configuration or {}).get("name") or product.name,
-                sku=(pending.configuration or {}).get("sku"),
-                configuration={"summary": (pending.configuration or {}).get("summary", "")},
+                requested_url=pending_configuration.get("canonical_url") or product.requested_url,
+                canonical_url=pending_configuration.get("canonical_url") or product.canonical_url,
+                name=pending_configuration.get("name") or product.name,
+                sku=pending_configuration.get("sku"),
+                configuration=structured_configuration,
                 configuration_fingerprint=pending.configuration_fingerprint,
                 check_interval_hours=product.check_interval_hours,
                 last_checked_at=pending.observed_at,
@@ -503,13 +509,13 @@ async def confirm_configuration(
             request.app.state.check_service._queue_events(session, fresh, [initial_event])
         else:
             pending.trusted = True
-            product.configuration = {"summary": (pending.configuration or {}).get("summary", "")}
+            product.configuration = structured_configuration
             product.configuration_fingerprint = pending.configuration_fingerprint
-            product.sku = (pending.configuration or {}).get("sku") or product.sku
-            product.name = (pending.configuration or {}).get("name") or product.name
-            product.canonical_url = (pending.configuration or {}).get(
-                "canonical_url"
-            ) or product.canonical_url
+            product.sku = pending_configuration.get("sku") or product.sku
+            product.name = pending_configuration.get("name") or product.name
+            product.canonical_url = (
+                pending_configuration.get("canonical_url") or product.canonical_url
+            )
             product.last_success_at = pending.observed_at
             product.status = "active"
     if action == "separate":

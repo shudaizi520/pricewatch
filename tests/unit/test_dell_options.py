@@ -9,6 +9,7 @@ from pricewatch.fetching.dell_options import (
     catalog_from_html,
     configured_price_minor,
     selected_from_html,
+    settled_offer,
 )
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dell" / "options.html"
@@ -67,3 +68,60 @@ def test_duplicate_unselected_option_label_is_deduplicated_in_catalog():
     group = soup.select_one('[aria-label="Graphics Card"]')
     group.append(deepcopy(group.select(".option-grid-wrapper")[1]))
     assert len(catalog_from_html(str(soup))["Graphics Card"]) == 2
+
+
+@pytest.mark.anyio
+async def test_changed_option_waits_past_stale_default_price():
+    soup = BeautifulSoup(FIXTURE.read_text(), "lxml")
+    gpu = soup.select_one('[aria-label="Graphics Card"]')
+    buttons = gpu.select(".option-grid-wrapper")
+    buttons[0].select_one(".price.scoprice").string = ""
+    buttons[1].select_one(".price.scoprice").string = "Selected"
+    selected_html = str(soup)
+
+    class SlowQuotePage:
+        def __init__(self):
+            self.prices = [399999, 399999, 399999, 509999, 509999, 509999]
+            self.reads = 0
+
+        async def content(self):
+            return selected_html
+
+        async def evaluate(self, _script):
+            price = self.prices[min(self.reads, len(self.prices) - 1)]
+            self.reads += 1
+            return f"Dell Price ${price / 100:,.2f}"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+    page = SlowQuotePage()
+    quote = await settled_offer(
+        page,
+        {"Graphics Card": "NVIDIA® GeForce RTX™ 5090 24 GB GDDR7"},
+        baseline_price=399999,
+        changed=True,
+    )
+    assert quote.price_minor == 509999
+    assert page.reads >= 6
+
+
+@pytest.mark.anyio
+async def test_changed_option_rejects_price_that_never_moves():
+    class StaleQuotePage:
+        async def content(self):
+            return FIXTURE.read_text()
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+    with pytest.raises(ValueError, match="价格未更新"):
+        await settled_offer(
+            StaleQuotePage(),
+            {"Graphics Card": "NVIDIA® GeForce RTX™ 5070 8 GB GDDR7"},
+            baseline_price=399999,
+            changed=True,
+        )

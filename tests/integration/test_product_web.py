@@ -317,6 +317,9 @@ async def test_confirm_configuration_adopts_new_baseline(admin_client):
         f"/products/{product_id}/confirm-configuration", data={"csrf_token": csrf(page.text)}
     )
     assert response.status_code == 303
+    with app.state.session_factory() as session:
+        stored = session.get(Product, product_id)
+        assert stored.configuration["gpu"] == "RTX 5080"
     outcome = checker.accept_snapshot(product_id, observation("RTX 5080", 280000))
     assert outcome.product.status == "active"
     assert outcome.events == []
@@ -529,3 +532,43 @@ async def test_configuration_review_shows_difference_and_can_split(admin_client)
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(Product.id))) == 2
         assert session.get(Product, product_id).status == "paused"
+        fresh = session.scalar(select(Product).where(Product.id != product_id))
+        assert fresh.configuration["gpu"] == "RTX 5080"
+
+
+@pytest.mark.anyio
+async def test_selected_dell_card_cannot_split_without_a_new_recipe(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/x",
+            sku="sku-1",
+            dell_selection={"Graphics Card": "RTX 5090"},
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    def observed(gpu):
+        return ProductSnapshot(
+            ProductIdentity("dell-us", "sku-1"),
+            "https://www.dell.com/x",
+            "Alienware",
+            ProductConfiguration(gpu=gpu),
+            Money("USD", 200000),
+        )
+
+    checker = app.state.check_service
+    checker.accept_snapshot(product_id, observed("RTX 5090"))
+    checker.accept_snapshot(product_id, observed("RTX 5080"))
+    page = await admin_client.get(f"/products/{product_id}")
+    assert "作为新商品" not in page.text
+    response = await admin_client.post(
+        f"/products/{product_id}/confirm-configuration",
+        data={"action": "separate", "csrf_token": csrf(page.text)},
+    )
+    assert response.status_code == 409
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count(Product.id))) == 1
+        assert session.get(Product, product_id).dell_selection == {"Graphics Card": "RTX 5090"}

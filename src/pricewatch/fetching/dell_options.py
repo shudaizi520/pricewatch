@@ -84,9 +84,37 @@ async def read_catalog(page: Page) -> dict[str, list[str]]:
     return catalog_from_html(await page.content())
 
 
+async def settled_offer(
+    page: Page, recipe: dict[str, str], baseline_price: int | None, changed: bool
+) -> ConfiguredOffer:
+    last_price: int | None = None
+    stable_reads = 0
+    for _ in range(20):
+        selected = selected_from_html(await page.content())
+        if any(selected.get(group) != label for group, label in recipe.items()):
+            raise ValueError("戴尔最终选中配置与要求不符")
+        try:
+            price = active_price_minor(await page.evaluate("document.body.innerText"))
+        except ValueError:
+            price = None
+        # Dell can mark the new option selected before its asynchronous quote arrives.
+        if changed and price == baseline_price:
+            price = None
+        stable_reads = stable_reads + 1 if price is not None and price == last_price else 1
+        if price is not None and stable_reads >= 3:
+            return ConfiguredOffer(selected, price)
+        last_price = price
+        await page.wait_for_timeout(1000)
+    if changed:
+        raise ValueError("戴尔切换配置后价格未更新; 未保存旧报价")
+    raise ValueError("戴尔配置价格未稳定显示")
+
+
 async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer:
     if not recipe:
         raise ValueError("请选择至少一个戴尔配置")
+    baseline_price: int | None = None
+    changed = False
     for group, label in recipe.items():
         catalog = await read_catalog(page)
         if label not in catalog.get(group, []):
@@ -94,6 +122,9 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
         selected = selected_from_html(await page.content())
         if selected.get(group) == label:
             continue
+        if not changed:
+            baseline_price = active_price_minor(await page.evaluate("document.body.innerText"))
+        changed = True
         option_group = page.get_by_role("group", name=group, exact=True)
         wrappers = option_group.locator(".option-grid-wrapper")
         matching = []
@@ -118,19 +149,4 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
             await page.wait_for_timeout(500)
         else:
             raise ValueError(f"戴尔没有完成配置切换: {group} / {label}")
-    last_price: int | None = None
-    for _ in range(30):
-        html = await page.content()
-        selected = selected_from_html(html)
-        if any(selected.get(group) != label for group, label in recipe.items()):
-            raise ValueError("戴尔最终选中配置与要求不符")
-        try:
-            visible_text = await page.evaluate("document.body.innerText")
-            price = active_price_minor(visible_text)
-        except ValueError:
-            price = None
-        if price is not None and price == last_price:
-            return ConfiguredOffer(selected, price)
-        last_price = price
-        await page.wait_for_timeout(500)
-    raise ValueError("戴尔配置价格未稳定显示")
+    return await settled_offer(page, recipe, baseline_price, changed)
