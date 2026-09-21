@@ -69,6 +69,7 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
 
         async def launch(self, **_kwargs):
             assert _kwargs["headless"] is False
+            assert "--webrtc-ip-handling-policy=disable_non_proxied_udp" in _kwargs["args"]
             return FakeBrowser()
 
     class FakePlaywrightContext:
@@ -84,6 +85,69 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
     fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
     with pytest.raises(AcquisitionError, match="HTTP 403"):
         await fetcher.fetch(URL("https://shop.example/item"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "dell_url",
+    [
+        "https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250/aa18250_reg_01",
+        "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250",
+    ],
+)
+async def test_dell_browser_does_not_trigger_interception_403(monkeypatch, dell_url):
+    class FakePage:
+        url = dell_url
+        routed = False
+
+        async def route(self, *_args):
+            self.routed = True
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 403 if self.routed else 200})()
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            pass
+
+        async def content(self):
+            return "<html><body>Dell Price $3,999.99</body></html>"
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **kwargs):
+            assert any(
+                arg.startswith("--proxy-server=socks5://127.0.0.1:") for arg in kwargs["args"]
+            )
+            assert "--proxy-bypass-list=<-loopback>" in kwargs["args"]
+            assert (
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in kwargs["args"]
+            )
+            assert "--webrtc-ip-handling-policy=disable_non_proxied_udp" in kwargs["args"]
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    page = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(URL(dell_url))
+    assert page.status == 200
 
 
 @pytest.mark.anyio

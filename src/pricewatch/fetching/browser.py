@@ -1,6 +1,7 @@
 """Short-lived Chromium fallback with an origin-pinned network policy."""
 
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 
 from httpx import URL
@@ -11,6 +12,7 @@ from pricewatch.adapters.base import ExtractionError, ProductAdapter
 from pricewatch.domain.products import ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError, HttpFetcher
 from pricewatch.fetching.safety import Resolver, UnsafeUrlError, public_addresses, system_resolver
+from pricewatch.fetching.socks_proxy import SafeSocksProxy
 from pricewatch.fetching.types import AcquiredPage
 
 DELL_READY_SCRIPT = r"""() => {
@@ -81,15 +83,31 @@ class BrowserFetcher:
                 raise AcquisitionError("Browser startup failed") from error
             raise AcquisitionError("Browser startup failed")
         try:
-            async with async_playwright() as playwright:
+            async with AsyncExitStack() as stack:
+                launch_args = [
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+                ]
+                if host in {"www.dell.com", "dell.com"}:
+                    proxy = await stack.enter_async_context(SafeSocksProxy(self.resolver))
+                    launch_args.extend(
+                        [
+                            f"--proxy-server=socks5://127.0.0.1:{proxy.port}",
+                            "--proxy-bypass-list=<-loopback>",
+                        ]
+                    )
+                else:
+                    launch_args.append(f"--host-resolver-rules=MAP {host} {address}")
+                playwright = await stack.enter_async_context(async_playwright())
                 browser = await playwright.chromium.launch(
                     headless=False,
-                    args=[f"--host-resolver-rules=MAP {host} {address}"],
+                    args=launch_args,
                 )
                 try:
                     context = await browser.new_context(accept_downloads=False)
                     page = await context.new_page()
-                    await page.route("**/*", lambda route: self.handle_route(route, host))
+                    if host not in {"www.dell.com", "dell.com"}:
+                        await page.route("**/*", lambda route: self.handle_route(route, host))
                     response = await page.goto(
                         str(url), wait_until="domcontentloaded", timeout=30000
                     )
