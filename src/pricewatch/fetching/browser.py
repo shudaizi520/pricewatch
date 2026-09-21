@@ -169,8 +169,14 @@ class AcquisitionPipeline:
         self.browser = browser
 
     async def acquire(
-        self, url: URL, adapter: ProductAdapter
+        self,
+        url: URL,
+        adapter: ProductAdapter,
+        dell_selection: dict[str, str] | None = None,
     ) -> tuple[AcquiredPage, ProductSnapshot]:
+        if dell_selection:
+            page = await self.browser.fetch(url, dell_selection=dell_selection)
+            return page, adapter.extract(page)
         try:
             page = await self.http.fetch(url)
             return page, adapter.extract(page)

@@ -233,7 +233,7 @@ class CheckService:
                                 coupon_text=snapshot.coupon_text,
                                 availability=snapshot.availability,
                                 configuration_fingerprint=fingerprint,
-                                configuration={"summary": snapshot.configuration.summary()},
+                                configuration=snapshot.configuration.as_record(),
                                 evidence=snapshot.evidence,
                                 observed_at=now,
                                 trusted=True,
@@ -247,7 +247,7 @@ class CheckService:
                     product.name = snapshot.name
                     product.sku = snapshot.identity.sku or product.sku
                     product.configuration_fingerprint = fingerprint
-                    product.configuration = {"summary": snapshot.configuration.summary()}
+                    product.configuration = snapshot.configuration.as_record()
                     product.last_success_at = now
             if product.status == "needs_attention":
                 if pending is None or pending.configuration_fingerprint != fingerprint:
@@ -264,7 +264,7 @@ class CheckService:
                             availability=snapshot.availability,
                             configuration_fingerprint=fingerprint,
                             configuration={
-                                "summary": snapshot.configuration.summary(),
+                                **snapshot.configuration.as_record(),
                                 "sku": snapshot.identity.sku,
                                 "canonical_url": snapshot.canonical_url,
                                 "name": snapshot.name,
@@ -342,10 +342,22 @@ class CheckService:
             url = URL(product.canonical_url or product.requested_url)
             sku = product.sku
             site = product.source_site
+            dell_selection = product.dell_selection
         try:
-            _, snapshot = await self.pipeline.acquire(url, self.registry.for_url(url))
+            adapter = self.registry.for_url(url)
+            if dell_selection:
+                _, snapshot = await self.pipeline.acquire(
+                    url, adapter, dell_selection=dell_selection
+                )
+                if any(
+                    snapshot.configuration.extras.get(group) != label
+                    for group, label in dell_selection.items()
+                ):
+                    raise ExtractionError("戴尔返回的配置与此卡片选择不符")
+            else:
+                _, snapshot = await self.pipeline.acquire(url, adapter)
         except Exception as error:
-            if site == "dell-us" and sku and self.dell_lookup:
+            if not dell_selection and site == "dell-us" and sku and self.dell_lookup:
                 candidates = await self.dell_lookup(sku)
                 if len(candidates) == 1 and candidates[0].identity.sku == sku:
                     return self.accept_snapshot(product_id, candidates[0], trigger=trigger)
@@ -355,9 +367,7 @@ class CheckService:
                         if item is not None:
                             item.status = "needs_attention"
             detail = (
-                str(error)[:240]
-                if isinstance(error, (AcquisitionError, ExtractionError))
-                else None
+                str(error)[:240] if isinstance(error, (AcquisitionError, ExtractionError)) else None
             )
             return self.record_failure(product_id, type(error).__name__, trigger, detail)
         return self.accept_snapshot(product_id, snapshot, trigger=trigger)

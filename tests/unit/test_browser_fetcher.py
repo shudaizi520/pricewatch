@@ -130,9 +130,7 @@ async def test_dell_browser_does_not_trigger_interception_403(monkeypatch, dell_
                 arg.startswith("--proxy-server=socks5://127.0.0.1:") for arg in kwargs["args"]
             )
             assert "--proxy-bypass-list=<-loopback>" in kwargs["args"]
-            assert (
-                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in kwargs["args"]
-            )
+            assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in kwargs["args"]
             assert "--webrtc-ip-handling-policy=disable_non_proxied_udp" in kwargs["args"]
             return FakeBrowser()
 
@@ -215,9 +213,7 @@ async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch, 
         "https://www.dell.com/zh-cn/shop/dell-laptops/spd/alienware18area51aa18250/aa18250_cn_01",
     ],
 )
-async def test_other_dell_product_does_not_require_area_51_option_grid(
-    monkeypatch, desktop_url
-):
+async def test_other_dell_product_does_not_require_area_51_option_grid(monkeypatch, desktop_url):
     class FakePage:
         url = desktop_url
 
@@ -292,8 +288,13 @@ async def test_pipeline_keeps_http_403_when_browser_challenge_cannot_be_parsed()
     class ChallengeBrowser:
         async def fetch(self, url):
             return AcquiredPage(
-                str(url), str(url), 200, b"<html>Verify you are human</html>", {},
-                "browser", datetime.now(UTC),
+                str(url),
+                str(url),
+                200,
+                b"<html>Verify you are human</html>",
+                {},
+                "browser",
+                datetime.now(UTC),
             )
 
     class ProductAdapter:
@@ -305,6 +306,38 @@ async def test_pipeline_keeps_http_403_when_browser_challenge_cannot_be_parsed()
         await pipeline.acquire(URL("https://shop.example/item"), ProductAdapter())
     assert "HTTP 403" in str(captured.value)
     assert "验证页" in str(captured.value)
+
+
+@pytest.mark.anyio
+async def test_configured_pipeline_never_uses_unselected_http_page():
+    class UnsafeDefaultHttp:
+        async def fetch(self, _url):
+            raise AssertionError("Configured checks must skip the default HTTP page")
+
+    class ConfiguredBrowser:
+        async def fetch(self, url, dell_selection=None):
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            return AcquiredPage(
+                str(url),
+                str(url),
+                200,
+                b"<html></html>",
+                {},
+                "browser",
+                datetime.now(UTC),
+            )
+
+    class Adapter:
+        def extract(self, _page):
+            return "configured"
+
+    pipeline = AcquisitionPipeline(UnsafeDefaultHttp(), ConfiguredBrowser())
+    _, snapshot = await pipeline.acquire(
+        URL("https://www.dell.com/en-us/shop/spd/example"),
+        Adapter(),
+        dell_selection={"Graphics Card": "RTX 5090"},
+    )
+    assert snapshot == "configured"
 
 
 @pytest.mark.anyio

@@ -157,3 +157,77 @@ async def test_non_unique_dell_sku_lookup_requires_attention(check_service):
     assert outcome.product.status == "needs_attention"
     with factory() as session:
         assert session.scalar(select(func.count(Observation.id))) == 0
+
+
+@pytest.mark.anyio
+async def test_same_url_cards_recheck_their_own_dell_selection(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
+    with factory.begin() as session:
+        cards = []
+        for gpu in ("RTX 5070", "RTX 5090"):
+            item = Product(
+                source_site="dell-us",
+                requested_url=address,
+                sku="aa18250_reg_01",
+                dell_selection={"Graphics Card": gpu},
+            )
+            session.add(item)
+            session.flush()
+            cards.append(item.id)
+
+    class ConfiguredPipeline:
+        async def acquire(self, url, _adapter, dell_selection=None):
+            assert dell_selection is not None
+            gpu = dell_selection["Graphics Card"]
+            amount = 399999 if gpu == "RTX 5070" else 509999
+            return None, ProductSnapshot(
+                ProductIdentity("dell-us", "aa18250_reg_01"),
+                str(url),
+                "Alienware",
+                ProductConfiguration(cpu="Core Ultra 9", gpu=gpu, extras={"Graphics Card": gpu}),
+                Money("USD", amount),
+            )
+
+    service = CheckService(factory, pipeline=ConfiguredPipeline())
+    await service.check_product(cards[0], "manual")
+    await service.check_product(cards[1], "manual")
+    with factory() as session:
+        left = session.scalars(select(Observation).where(Observation.product_id == cards[0])).all()
+        right = session.scalars(select(Observation).where(Observation.product_id == cards[1])).all()
+        assert [row.price_minor for row in left] == [399999]
+        assert [row.price_minor for row in right] == [509999]
+    engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_wrong_dell_selection_never_overwrites_trusted_price(check_service):
+    service, factory, product_id = check_service
+    with factory.begin() as session:
+        session.get(Product, product_id).dell_selection = {"Graphics Card": "RTX 5090"}
+    trusted = ProductSnapshot(
+        ProductIdentity("dell-us", "sku_01"),
+        "https://www.dell.com/en-us/shop/spd/x/sku_01",
+        "Alienware",
+        ProductConfiguration(
+            cpu="Core Ultra 9", gpu="RTX 5090", extras={"Graphics Card": "RTX 5090"}
+        ),
+        Money("USD", 509999),
+    )
+    service.accept_snapshot(product_id, trusted)
+
+    class WrongPipeline:
+        async def acquire(self, url, _adapter, dell_selection=None):
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            return None, snapshot(gpu="RTX 5070", amount=399999)
+
+    service.pipeline = WrongPipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == "failed"
+    with factory() as session:
+        rows = session.scalars(
+            select(Observation).where(Observation.product_id == product_id)
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].price_minor == 509999
