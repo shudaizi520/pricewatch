@@ -14,7 +14,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY --from=wheels /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels pricewatch && \
-    python -m playwright install --with-deps --only-shell chromium && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      fonts-liberation fonts-noto-color-emoji libasound2t64 \
+      libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+      libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 \
+      libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
+      libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+      libxfixes3 libxkbcommon0 libxrandr2 && \
+    python -m playwright install --only-shell chromium && \
     groupadd --gid 10001 pricewatch && \
     useradd --uid 10001 --gid 10001 --create-home --home-dir /home/pricewatch pricewatch && \
     mkdir -p /data && chown 10001:10001 /data && \
