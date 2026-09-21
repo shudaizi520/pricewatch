@@ -70,8 +70,13 @@ class BrowserFetcher:
                     response = await page.goto(
                         str(url), wait_until="domcontentloaded", timeout=30000
                     )
-                    if response is None or response.status >= 400:
-                        raise AcquisitionError("Browser page was blocked or empty")
+                    if response is None:
+                        raise AcquisitionError("浏览器未收到商品页面响应")
+                    if response.status >= 400:
+                        raise AcquisitionError(
+                            f"浏览器访问商品页面返回 HTTP {response.status}",
+                            status_code=response.status,
+                        )
                     html = await page.content()
                     body = html.encode("utf-8")
                     if len(body) > self.max_body_bytes:
@@ -98,6 +103,20 @@ class AcquisitionPipeline:
         try:
             page = await self.http.fetch(url)
             return page, adapter.extract(page)
-        except (AcquisitionError, ExtractionError):
-            page = await self.browser.fetch(url)
-            return page, adapter.extract(page)
+        except (AcquisitionError, ExtractionError) as first_error:
+            try:
+                page = await self.browser.fetch(url)
+                return page, adapter.extract(page)
+            except (AcquisitionError, ExtractionError) as browser_error:
+                if (
+                    isinstance(first_error, AcquisitionError)
+                    and isinstance(browser_error, AcquisitionError)
+                    and first_error.status_code == browser_error.status_code == 403
+                ):
+                    raise AcquisitionError(
+                        "普通请求和浏览器都被网站拒绝 (HTTP 403), 目前无法读取真实价格。",
+                        status_code=403,
+                    ) from browser_error
+                raise AcquisitionError(
+                    f"普通请求失败: {first_error}; 浏览器请求失败: {browser_error}"
+                ) from browser_error

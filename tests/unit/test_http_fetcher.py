@@ -69,3 +69,12 @@ async def test_timeout_is_reported_as_acquisition_error():
     fetcher = HttpFetcher(resolver=resolver, transport=httpx.MockTransport(timeout))
     with pytest.raises(AcquisitionError):
         await fetcher.fetch(httpx.URL("https://shop.example/item"))
+
+
+@pytest.mark.anyio
+async def test_http_denial_keeps_status_for_browser_fallback_diagnosis():
+    transport = httpx.MockTransport(lambda _: httpx.Response(403))
+    fetcher = HttpFetcher(resolver=resolver, transport=transport)
+    with pytest.raises(AcquisitionError) as captured:
+        await fetcher.fetch(httpx.URL("https://shop.example/item"))
+    assert captured.value.status_code == 403

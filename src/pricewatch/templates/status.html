@@ -3,5 +3,5 @@
 {% block content %}
 <div class="page-head"><div><div class="eyebrow">SYSTEM</div><h1>运行状态</h1><p class="muted">当前服务与最近一次检查。</p></div></div>
 <section class="stats"><div class="stat"><span class="stat-symbol">●</span><div><strong>正常</strong><span>应用服务</span></div></div><div class="stat"><span class="stat-symbol">◉</span><div><strong>{{ active }}</strong><span>正在监控</span></div></div><div class="stat"><span class="stat-symbol">⌁</span><div><strong>{{ last.outcome if last else '待检查' }}</strong><span>最近检查结果</span></div></div></section>
-{% if last %}<section class="panel"><h2>最近检查</h2><p class="muted">{{ last.created_at.strftime('%Y-%m-%d %H:%M') }} UTC · {{ last.error_category or '正常' }}</p></section>{% endif %}
+{% if last %}<section class="panel"><h2>最近检查</h2><p class="muted">{{ last.created_at.strftime('%Y-%m-%d %H:%M') }} UTC · {{ last.error_category or '正常' }}</p>{% if last.error_message %}<p class="error">{{ last.error_message }}</p>{% endif %}</section>{% endif %}
 {% endblock %}

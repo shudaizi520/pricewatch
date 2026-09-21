@@ -9,11 +9,13 @@ from httpx import URL
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from pricewatch.adapters.base import ExtractionError
 from pricewatch.adapters.registry import AdapterRegistry
 from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline
+from pricewatch.fetching.http import AcquisitionError
 from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
@@ -295,7 +297,11 @@ class CheckService:
         )
 
     def record_failure(
-        self, product_id: int, category: str, trigger: CheckTrigger = "scheduled"
+        self,
+        product_id: int,
+        category: str,
+        trigger: CheckTrigger = "scheduled",
+        error_message: str | None = None,
     ) -> CheckOutcome:
         now = datetime.now(UTC)
         events: list[DomainEvent] = []
@@ -316,6 +322,7 @@ class CheckService:
                     trigger=trigger,
                     outcome="failed",
                     error_category=category,
+                    error_message=error_message,
                     created_at=now,
                 )
             )
@@ -347,5 +354,10 @@ class CheckService:
                         item = session.get(Product, product_id)
                         if item is not None:
                             item.status = "needs_attention"
-            return self.record_failure(product_id, type(error).__name__, trigger)
+            detail = (
+                str(error)[:240]
+                if isinstance(error, (AcquisitionError, ExtractionError))
+                else None
+            )
+            return self.record_failure(product_id, type(error).__name__, trigger, detail)
         return self.accept_snapshot(product_id, snapshot, trigger=trigger)

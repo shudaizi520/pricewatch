@@ -3,7 +3,8 @@ from datetime import UTC, datetime
 import pytest
 from httpx import URL
 
-from pricewatch.fetching.browser import BrowserFetcher
+from pricewatch.adapters.base import ExtractionError
+from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import AcquiredPage
 
@@ -39,6 +40,92 @@ async def test_browser_failure_is_categorized():
     fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
     with pytest.raises(AcquisitionError):
         await fetcher.fetch(URL("https://shop.example/item"), browser_factory=lambda: None)
+
+
+@pytest.mark.anyio
+async def test_browser_reports_actual_blocking_status(monkeypatch):
+    class FakePage:
+        url = "https://shop.example/item"
+
+        async def route(self, *_):
+            pass
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 403})()
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
+    with pytest.raises(AcquisitionError, match="HTTP 403"):
+        await fetcher.fetch(URL("https://shop.example/item"))
+
+
+@pytest.mark.anyio
+async def test_pipeline_keeps_both_denials_instead_of_hiding_http_403():
+    class FailingFetcher:
+        def __init__(self, message, status_code):
+            self.message = message
+            self.status_code = status_code
+
+        async def fetch(self, _url):
+            raise AcquisitionError(self.message, status_code=self.status_code)
+
+    pipeline = AcquisitionPipeline(
+        FailingFetcher("HTTP 403 from product page", 403),
+        FailingFetcher("Browser returned HTTP 403", 403),
+    )
+    with pytest.raises(AcquisitionError) as captured:
+        await pipeline.acquire(URL("https://shop.example/item"), object())
+    assert "HTTP 403" in str(captured.value)
+    assert "普通请求和浏览器" in str(captured.value)
+
+
+@pytest.mark.anyio
+async def test_pipeline_keeps_http_403_when_browser_challenge_cannot_be_parsed():
+    class DeniedHttp:
+        async def fetch(self, _url):
+            raise AcquisitionError("商品页面返回 HTTP 403", status_code=403)
+
+    class ChallengeBrowser:
+        async def fetch(self, url):
+            return AcquiredPage(
+                str(url), str(url), 200, b"<html>Verify you are human</html>", {},
+                "browser", datetime.now(UTC),
+            )
+
+    class ProductAdapter:
+        def extract(self, _page):
+            raise ExtractionError("页面没有商品价格; 可能是验证页")
+
+    pipeline = AcquisitionPipeline(DeniedHttp(), ChallengeBrowser())
+    with pytest.raises(AcquisitionError) as captured:
+        await pipeline.acquire(URL("https://shop.example/item"), ProductAdapter())
+    assert "HTTP 403" in str(captured.value)
+    assert "验证页" in str(captured.value)
 
 
 @pytest.mark.anyio

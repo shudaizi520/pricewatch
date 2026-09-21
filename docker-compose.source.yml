@@ -1,0 +1,4 @@
+services:
+  pricewatch:
+    volumes:
+      - ./src:/app/src:ro
