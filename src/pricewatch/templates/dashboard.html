@@ -8,7 +8,7 @@
 <section class="stats" aria-label="监控概况">
   <div class="stat"><span class="stat-symbol" aria-hidden="true">◉</span><div><strong>{{ cards | selectattr('product.status', 'equalto', 'active') | list | length }}</strong><span>正在监控</span></div></div>
   <div class="stat"><span class="stat-symbol" aria-hidden="true">↘</span><div><strong id="selected-price">{{ cards[0].display_price if cards else '—' }}</strong><span>所选商品价格</span></div></div>
-  <div class="stat"><span class="stat-symbol" aria-hidden="true">⌁</span><div><strong>每 6 小时</strong><span>默认检查周期 · 北京时间</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">⌁</span><div><strong>每天 10:00</strong><span>自动检查 · 北京时间</span></div></div>
 </section>
 <div class="section-heading"><h2>监控列表 <small class="muted">{{ cards | length }} 件商品</small></h2><div class="view-toggle" role="group" aria-label="布局选择"><button type="button" data-view-choice="cards" aria-pressed="true">卡片</button><button type="button" data-view-choice="list" aria-pressed="false">列表</button></div></div>
 {% if cards %}

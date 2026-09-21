@@ -473,12 +473,14 @@ async def test_target_and_pause(admin_client):
         session.flush()
         product_id = product.id
     page = await admin_client.get(f"/products/{product_id}")
+    assert "每天 10:00" in page.text
+    assert 'name="check_interval_hours"' not in page.text
     updated = await admin_client.post(
         f"/products/{product_id}/settings",
         data={
             "target_price": "2800.00",
             "notify_mode": "target_or_change",
-            "check_interval_hours": "6",
+            "check_interval_hours": "1",
             "csrf_token": csrf(page.text),
         },
     )
@@ -491,6 +493,16 @@ async def test_target_and_pause(admin_client):
         current = session.get(Product, product_id)
         assert current.target_price_minor == 280000
         assert current.status == "paused"
+        assert current.check_interval_hours == 24
+
+
+@pytest.mark.anyio
+async def test_dashboard_shows_daily_beijing_check_time(admin_client):
+    dashboard = await admin_client.get("/")
+    assert dashboard.status_code == 200
+    assert "每天 10:00" in dashboard.text
+    assert "北京时间" in dashboard.text
+    assert "每 6 小时" not in dashboard.text
 
 
 @pytest.mark.anyio

@@ -1,4 +1,4 @@
-"""One-process, one-runner schedule with Beijing-local six-hour defaults."""
+"""One-process, one-runner schedule with a daily Beijing-local check."""
 
 import asyncio
 from contextlib import suppress
@@ -17,21 +17,12 @@ from pricewatch.services.checks import CheckTrigger
 _BEIJING = ZoneInfo("Asia/Shanghai")
 
 
-def next_due(after: datetime, hours: int, product_id: int) -> datetime:
-    if hours not in (1, 3, 6, 12, 24):
-        raise ValueError("Invalid check interval")
+def next_due(after: datetime) -> datetime:
     local = after.astimezone(_BEIJING)
-    # Local midnight is the common anchor for every approved interval.
-    for offset in range(0, 48):
-        candidate = local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-            hours=offset
-        )
-        if candidate.hour % hours != 0:
-            continue
-        due = (candidate + timedelta(seconds=product_id % 90)).astimezone(UTC)
-        if due > after:
-            return due
-    raise RuntimeError("Could not find a future check slot")
+    candidate = local.replace(hour=10, minute=0, second=0, microsecond=0)
+    if candidate <= local:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
 
 
 class Checker(Protocol):
@@ -45,8 +36,6 @@ class JobReference:
 
 
 class SchedulerService:
-    default_local_hours = (0, 6, 12, 18)
-
     def __init__(self, factory: sessionmaker[Session], checker: Checker | None) -> None:
         self.factory = factory
         self.checker = checker
@@ -61,7 +50,8 @@ class SchedulerService:
         now = datetime.now(UTC)
         with self.factory.begin() as session:
             for product in session.scalars(select(Product).where(Product.status == "active")):
-                product.next_check_at = next_due(now, product.check_interval_hours, product.id)
+                product.check_interval_hours = 24
+                product.next_check_at = next_due(now)
         self.worker = asyncio.create_task(self._run())
         self.scheduler.add_job(self.run_due, "interval", seconds=30, id="due", max_instances=1)
         self.scheduler.start()
@@ -84,9 +74,8 @@ class SchedulerService:
             product = session.get(Product, product_id)
             if product is None:
                 raise LookupError("Product not found")
-            product.next_check_at = next_due(
-                datetime.now(UTC), product.check_interval_hours, product_id
-            )
+            product.check_interval_hours = 24
+            product.next_check_at = next_due(datetime.now(UTC))
 
     def request_check(self, product_id: int, trigger: CheckTrigger) -> JobReference:
         if self.worker is None:
@@ -107,7 +96,7 @@ class SchedulerService:
             ).all()
             identifiers = [item.id for item in due]
             for item in due:
-                item.next_check_at = next_due(now, item.check_interval_hours, item.id)
+                item.next_check_at = next_due(now)
         for identifier in identifiers:
             self.request_check(identifier, "scheduled")
 

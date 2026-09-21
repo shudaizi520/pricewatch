@@ -9,14 +9,14 @@ from pricewatch.db.session import create_engine_and_session
 from pricewatch.services.scheduler import SchedulerService, next_due
 
 
-def test_default_beijing_slots_and_jitter():
-    now = datetime(2026, 9, 21, 1, 0, tzinfo=UTC)  # 09:00 Beijing
-    assert SchedulerService.default_local_hours == (0, 6, 12, 18)
-    due = next_due(now, 6, 3)
-    assert due.date() == now.date()
-    assert due.hour == 4
-    assert 0 <= due.second <= 89
-    assert next_due(due, 6, 3) > due
+def test_daily_beijing_ten_oclock_slot():
+    before = datetime(2026, 9, 21, 1, 0, tzinfo=UTC)  # 09:00 Beijing
+    due = datetime(2026, 9, 21, 2, 0, tzinfo=UTC)  # 10:00 Beijing
+    assert next_due(before) == due
+    assert next_due(due) == datetime(2026, 9, 22, 2, 0, tzinfo=UTC)
+    assert next_due(datetime(2026, 9, 21, 15, 59, tzinfo=UTC)) == datetime(
+        2026, 9, 22, 2, 0, tzinfo=UTC
+    )
 
 
 @pytest.mark.anyio
@@ -85,13 +85,14 @@ async def test_restart_discards_stale_due_time(settings):
 
 
 @pytest.mark.anyio
-async def test_restart_realigns_old_future_slot_to_midnight(settings):
+async def test_restart_realigns_legacy_six_hour_product_to_daily_ten(settings):
     engine, factory = create_engine_and_session(settings)
     Base.metadata.create_all(engine)
     with factory.begin() as session:
         item = Product(
             source_site="dell-us",
             requested_url="https://www.dell.com/x",
+            check_interval_hours=6,
             next_check_at=datetime(2026, 12, 31, 20, 0, tzinfo=UTC),
         )
         session.add(item)
@@ -103,8 +104,9 @@ async def test_restart_realigns_old_future_slot_to_midnight(settings):
         with factory() as session:
             refreshed = session.get(Product, identifier)
             assert refreshed is not None
-            expected = next_due(datetime.now(UTC), 6, identifier)
+            expected = next_due(datetime.now(UTC))
             assert refreshed.next_check_at.replace(tzinfo=UTC) == expected
+            assert refreshed.check_interval_hours == 24
     finally:
         await scheduler.stop()
         engine.dispose()

@@ -65,7 +65,7 @@ class Product(Base):
     dell_selection: Mapped[dict[str, str] | None] = mapped_column(JSON)
     configuration_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24), default="active", index=True)
-    check_interval_hours: Mapped[int] = mapped_column(Integer, default=6)
+    check_interval_hours: Mapped[int] = mapped_column(Integer, default=24)
     next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     target_price_minor: Mapped[int | None] = mapped_column(Integer)
     notify_mode: Mapped[str] = mapped_column(String(32), default="changes")

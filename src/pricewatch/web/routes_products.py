@@ -352,18 +352,11 @@ async def product_settings(
     product_id: int,
     target_price: str = Form(""),
     notify_mode: str = Form("changes"),
-    check_interval_hours: int = Form(6),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
-    if notify_mode not in ("changes", "target_or_change") or check_interval_hours not in (
-        1,
-        3,
-        6,
-        12,
-        24,
-    ):
+    if notify_mode not in ("changes", "target_or_change"):
         raise HTTPException(422)
     try:
         target = (
@@ -376,7 +369,6 @@ async def product_settings(
         assert product is not None
         product.target_price_minor = target
         product.notify_mode = notify_mode
-        product.check_interval_hours = check_interval_hours
     request.app.state.scheduler.schedule_product(product_id)
     return RedirectResponse(f"/products/{product_id}", status_code=303)
 
