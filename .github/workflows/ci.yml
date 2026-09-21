@@ -39,6 +39,8 @@ jobs:
           done
           if ! curl -fsS http://127.0.0.1:18080/healthz; then
             docker inspect --format '{{.State.Status}} (exit {{.State.ExitCode}}): {{.State.Error}}' pricewatch-ci
+            docker exec pricewatch-ci ps -ef
+            docker exec pricewatch-ci sh -c 'ls -la /tmp; ls -la /tmp/.X11-unix 2>/dev/null || true'
             docker logs pricewatch-ci
             exit 1
           fi
