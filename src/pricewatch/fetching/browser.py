@@ -1,7 +1,6 @@
 """Short-lived Chromium fallback with an origin-pinned network policy."""
 
 from collections.abc import Callable
-from contextlib import suppress
 from datetime import UTC, datetime
 
 from httpx import URL
@@ -13,6 +12,28 @@ from pricewatch.domain.products import ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError, HttpFetcher
 from pricewatch.fetching.safety import Resolver, UnsafeUrlError, public_addresses, system_resolver
 from pricewatch.fetching.types import AcquiredPage
+
+DELL_READY_SCRIPT = r"""() => {
+  const selected = [...document.querySelectorAll('.option-grid-item')]
+    .filter(card => card.querySelector('.price.scoprice')?.textContent.trim() === 'Selected')
+    .map(card => card.querySelector('[data-test-id="option-title"]')?.textContent.trim() || '');
+  const has = pattern => selected.some(title => pattern.test(title));
+  if (!has(/Core\s*Ultra|Ryzen/i) || !has(/RTX\W*\d{4}|Radeon/i) ||
+      !has(/\d+\s*GB.*\bDDR/i) || !has(/\d+\s*TB.*(?:SSD|M\.2)/i) ||
+      !has(/\d{2}\s*(?:"|″|inch)/i)) return false;
+  const products = [...document.querySelectorAll('script[type="application/ld+json"]')]
+    .flatMap(node => {
+      try {
+        const value = JSON.parse(node.textContent);
+        return Array.isArray(value) ? value : [value];
+      } catch { return []; }
+    });
+  const product = products.find(value => value?.['@type'] === 'Product');
+  const offer = product?.offers;
+  const visible = document.body?.innerText.match(/Dell Price\s*\$([\d,]+\.\d{2})/i);
+  if (!offer || offer.priceCurrency?.toUpperCase() !== 'USD' || !visible) return false;
+  return Math.abs(Number(offer.price) - Number(visible[1].replaceAll(',', ''))) < 0.005;
+}"""
 
 
 class BrowserFetcher:
@@ -82,10 +103,10 @@ class BrowserFetcher:
                     if host in {"www.dell.com", "dell.com"} and url.path.startswith(
                         "/en-us/shop/"
                     ):
-                        with suppress(PlaywrightTimeoutError):
-                            await page.wait_for_selector(
-                                ".option-grid-item .price.scoprice", timeout=10000
-                            )
+                        try:
+                            await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)
+                        except PlaywrightTimeoutError as error:
+                            raise AcquisitionError("戴尔商品配置或价格尚未完整加载") from error
                     html = await page.content()
                     body = html.encode("utf-8")
                     if len(body) > self.max_body_bytes:

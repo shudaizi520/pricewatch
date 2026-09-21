@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import URL
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError
 from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher
@@ -83,6 +84,59 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
     fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
     with pytest.raises(AcquisitionError, match="HTTP 403"):
         await fetcher.fetch(URL("https://shop.example/item"))
+
+
+@pytest.mark.anyio
+async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch):
+    dell_url = (
+        "https://www.dell.com/en-us/shop/laptop-computers/spd/"
+        "alienware18area51aa18250/aa18250_reg_01"
+    )
+
+    class FakePage:
+        url = dell_url
+
+        async def route(self, *_):
+            pass
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            raise PlaywrightTimeoutError("selection never loaded")
+
+        async def content(self):
+            raise AssertionError("Incomplete Dell HTML must not be captured")
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
+    with pytest.raises(AcquisitionError, match="配置或价格尚未完整加载"):
+        await fetcher.fetch(URL(dell_url))
 
 
 @pytest.mark.anyio
