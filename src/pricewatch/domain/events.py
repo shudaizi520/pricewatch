@@ -19,6 +19,7 @@ class DomainEvent:
         payload = {
             "product_id": self.product_id,
             "kind": self.kind,
+            "observed_at": self.observed_at.isoformat(),
             "old": self.old,
             "new": self.new,
         }
