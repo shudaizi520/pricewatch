@@ -19,6 +19,7 @@ from pricewatch.domain.products import Money, ProductSnapshot
 from pricewatch.fetching.dell_options import catalog_from_html
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
+from pricewatch.web.configuration import configuration_rows
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
 
 router = APIRouter()
@@ -52,6 +53,28 @@ def _sparkline(observations: list[Observation]) -> str:
     )
 
 
+def _display_price(currency: str, minor: int) -> str:
+    return f"{'$' if currency == 'USD' else currency + ' '}{minor / 100:.2f}"
+
+
+def _chart_points(observations: list[Observation]) -> list[dict[str, object]]:
+    ordered = list(reversed(observations))
+    if not ordered:
+        return []
+    low = min(item.price_minor for item in ordered)
+    high = max(item.price_minor for item in ordered)
+    span = high - low
+    return [
+        {
+            "x": round(18 + index * 564 / max(len(ordered) - 1, 1)),
+            "y": round(58 - (item.price_minor - low) * 40 / span) if span else 58,
+            "date": item.observed_at.strftime("%Y-%m-%d %H:%M"),
+            "price": _display_price(item.currency, item.price_minor),
+        }
+        for index, item in enumerate(ordered)
+    ]
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> Response:
     require_admin(request)
@@ -82,19 +105,17 @@ async def dashboard(request: Request) -> Response:
                     if latest
                     else None,
                     "sparkline": _sparkline(observations),
+                    "configuration_rows": configuration_rows(product.configuration),
+                    "display_price": _display_price(latest.currency, latest.price_minor)
+                    if latest
+                    else "—",
+                    "currency": latest.currency if latest else "",
                 }
             )
-        usd_lows = [
-            card["lowest"]
-            for card in cards
-            if card["latest"] is not None
-            and card["latest"].currency == "USD"
-            and card["lowest"] is not None
-        ]
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context=_context(request, cards=cards, usd_low=min(usd_lows) if usd_lows else None),
+        context=_context(request, cards=cards),
     )
 
 
@@ -222,6 +243,9 @@ async def product_preview(
             error=None,
             catalog=None,
             recipe=recipe,
+            preview_rows=configuration_rows(
+                snapshot.configuration.as_record(), include_extras=True
+            ),
             url=url,
         ),
     )
@@ -282,7 +306,14 @@ async def product_detail(request: Request, product_id: int) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="product_detail.html",
-        context=_context(request, product=product, history=history, pending=pending),
+        context=_context(
+            request,
+            product=product,
+            history=history,
+            pending=pending,
+            configuration_rows=configuration_rows(product.configuration, include_extras=True),
+            chart_points=_chart_points(history),
+        ),
     )
 
 

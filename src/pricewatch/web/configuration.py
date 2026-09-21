@@ -11,6 +11,16 @@ LABELS = {
     "os": "系统",
 }
 
+EXTRA_LABELS = {
+    "Power Supply": "电源",
+    "Power Cord": "电源线",
+    "Primary Battery": "电池",
+    "Camera": "摄像头",
+    "Keyboard": "键盘",
+    "Wireless": "无线网卡",
+    "Base Warranty": "保修",
+}
+
 
 def _legacy_label(value: str) -> str:
     if re.search(r"RTX|GeForce|Radeon", value, re.I):
@@ -26,7 +36,9 @@ def _legacy_label(value: str) -> str:
     return "配置"
 
 
-def configuration_rows(record: dict[str, object] | None) -> list[tuple[str, str]]:
+def configuration_rows(
+    record: dict[str, object] | None, include_extras: bool = False
+) -> list[tuple[str, str]]:
     if not record:
         return []
     rows = [
@@ -35,6 +47,17 @@ def configuration_rows(record: dict[str, object] | None) -> list[tuple[str, str]
         if isinstance(record.get(key), str) and str(record[key]).strip()
     ]
     if rows:
+        extras = record.get("extras")
+        if include_extras and isinstance(extras, dict):
+            known = {value for _, value in rows}
+            for key, value in extras.items():
+                if (
+                    isinstance(key, str)
+                    and isinstance(value, str)
+                    and value.strip()
+                    and value not in known
+                ):
+                    rows.append((EXTRA_LABELS.get(key, key), value.strip()))
         return rows
     summary = record.get("summary")
     if not isinstance(summary, str):

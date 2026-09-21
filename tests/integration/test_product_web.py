@@ -363,8 +363,61 @@ async def test_non_usd_prices_are_not_displayed_as_dollars_or_mixed_in_overview(
     assert "EUR 1999.00" in dashboard
     assert "EUR 1999.00" in detail
     assert "$1999.00" not in dashboard + detail
-    assert "美元最低价" in dashboard
+    assert "所选商品价格" in dashboard
     assert "最低 $1999.00" not in dashboard
+
+
+@pytest.mark.anyio
+async def test_dashboard_cards_show_labeled_config_and_selectable_currency(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        for currency, price, gpu in [("USD", 399999, "RTX 5070"), ("CNY", 3741430, "RTX 5090")]:
+            item = Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/x",
+                name="Alienware 18",
+                configuration={"cpu": "Core Ultra 9", "gpu": gpu},
+            )
+            session.add(item)
+            session.flush()
+            session.add(
+                Observation(
+                    product_id=item.id,
+                    currency=currency,
+                    price_minor=price,
+                    configuration_fingerprint="a",
+                )
+            )
+    dashboard = (await admin_client.get("/")).text
+    assert "显卡" in dashboard and "RTX 5090" in dashboard
+    assert 'data-currency="CNY"' in dashboard
+    assert 'data-price="CNY 37414.30"' in dashboard
+    assert dashboard.count('class="card-select"') == 2
+
+
+@pytest.mark.anyio
+async def test_detail_price_chart_has_ordered_points(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        item = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(item)
+        session.flush()
+        product_id = item.id
+        for day, amount in [(1, 399999), (2, 379999)]:
+            session.add(
+                Observation(
+                    product_id=product_id,
+                    currency="USD",
+                    price_minor=amount,
+                    configuration_fingerprint="a",
+                    observed_at=datetime(2026, 9, day, tzinfo=UTC),
+                )
+            )
+    detail = (await admin_client.get(f"/products/{product_id}")).text
+    assert 'aria-label="价格走势图"' in detail
+    chart = detail.split('aria-label="价格走势图"', 1)[1].split("</svg>", 1)[0]
+    assert chart.count('class="chart-point"') == 2
+    assert chart.index("2026-09-01") < chart.index("2026-09-02")
 
 
 @pytest.mark.anyio

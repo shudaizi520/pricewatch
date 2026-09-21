@@ -17,6 +17,17 @@ if (productGrid) {
     button.addEventListener('click', () => setView(button.dataset.viewChoice));
   });
   setView(choice);
+  const cards = [...document.querySelectorAll('.product-card[data-product-id]')];
+  function selectCard(card) {
+    document.querySelector('#selected-price').textContent = card.dataset.price || '—';
+    cards.forEach(item => {
+      item.querySelector('.card-select').setAttribute('aria-pressed', String(item === card));
+    });
+    localStorage.setItem('pricewatch-selected-product', card.dataset.productId);
+  }
+  cards.forEach(card => card.querySelector('.card-select').addEventListener('click', () => selectCard(card)));
+  const saved = localStorage.getItem('pricewatch-selected-product');
+  selectCard(cards.find(card => card.dataset.productId === saved) || cards[0]);
 }
 const backupForm = document.getElementById('backup-form');
 if (backupForm) {
