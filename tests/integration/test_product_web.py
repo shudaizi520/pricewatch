@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 from sqlalchemy import func, select
 
 from pricewatch.db.models import Observation, Product
@@ -34,6 +35,97 @@ async def test_dashboard_needs_login(client):
     response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_card_keeps_key_configuration_visible_and_folds_other_options(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/x",
+                name="Alienware 18",
+                configuration={
+                    "cpu": "Ultra 9",
+                    "gpu": "RTX 5090",
+                    "extras": {
+                        "Keyboard": "CherryMX",
+                        "Wireless": "Killer Wi-Fi 7",
+                        "Operating System Languages": "English, French",
+                        "Documentation": "No Documentation",
+                    },
+                },
+            )
+        )
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    card = page.select_one(".product-card")
+    primary = card.select_one(".card-select")
+    folded = card.select_one("details.secondary-config")
+    assert "Ultra 9" in primary.get_text(" ", strip=True)
+    assert "RTX 5090" in primary.get_text(" ", strip=True)
+    assert "CherryMX" in primary.get_text(" ", strip=True)
+    assert "Killer Wi-Fi 7" not in primary.get_text(" ", strip=True)
+    assert folded is not None and not folded.has_attr("open")
+    assert "Killer Wi-Fi 7" in folded.get_text(" ", strip=True)
+    assert "English, French" in folded.get_text(" ", strip=True)
+    assert "No Documentation" in folded.get_text(" ", strip=True)
+
+
+@pytest.mark.anyio
+async def test_expanded_extra_labels_wrap_without_overlapping_values(admin_client):
+    from playwright.async_api import async_playwright
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/x",
+                name="Alienware 18 Area-51 Gaming Laptop",
+                configuration={
+                    "cpu": "Intel Core Ultra 9 processor 290HX Plus",
+                    "gpu": "NVIDIA GeForce RTX 5090",
+                    "extras": {
+                        "Keyboard": "CherryMX per-key AlienFX RGB keyboard",
+                        "Operating System Languages": "English, French, Spanish",
+                        "Documentation": "Regular - No Documentation",
+                    },
+                },
+            )
+        )
+    markup = (await admin_client.get("/")).text
+    css = Path(__file__).parents[2] / "src" / "pricewatch" / "static" / "app.css"
+    card_css = css.with_name("cards.css")
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(headless=True)
+        except Exception as error:
+            if "error while loading shared libraries" in str(error):
+                pytest.skip("Local Chromium system libraries are unavailable")
+            raise
+        try:
+            page = await browser.new_page(viewport={"width": 1280, "height": 900})
+            await page.set_content(markup, wait_until="domcontentloaded")
+            await page.add_style_tag(path=str(css))
+            if card_css.exists():
+                await page.add_style_tag(path=str(card_css))
+            await page.locator(".product-grid").evaluate("element => element.dataset.view = 'list'")
+            await page.locator(".secondary-config").evaluate("element => element.open = true")
+            label = page.locator(".secondary-config dt", has_text="Operating System Languages")
+            assert await label.evaluate("element => element.scrollWidth <= element.clientWidth")
+            title = page.locator(".card-select h3")
+            primary = page.locator(".card-select .config-rows")
+            price = page.locator(".card-select .price-block")
+            assert await title.evaluate("element => element.scrollWidth <= element.clientWidth")
+            assert await primary.evaluate("element => element.scrollWidth <= element.clientWidth")
+            title_box = await title.bounding_box()
+            primary_box = await primary.bounding_box()
+            price_box = await price.bounding_box()
+            assert title_box["x"] + title_box["width"] <= primary_box["x"]
+            assert primary_box["x"] + primary_box["width"] <= price_box["x"]
+        finally:
+            await browser.close()
 
 
 @pytest.mark.anyio

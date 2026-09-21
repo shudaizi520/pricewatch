@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.db.models import NotificationDelivery, Product
 from pricewatch.domain.events import DomainEvent
+from pricewatch.domain.products import ProductConfiguration
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{20,128}\Z")
 _FEISHU_HOSTS = {"open.feishu.cn", "open.larksuite.com"}
@@ -98,9 +99,36 @@ class DeliveryResult:
     status: str
 
 
+def _message_configuration(record: dict[str, object] | None) -> str:
+    if not record:
+        return "配置待确认"
+    config = ProductConfiguration.from_record(record)
+    parts = [
+        value
+        for value in (
+            config.cpu,
+            config.gpu,
+            config.memory,
+            config.storage,
+            config.display,
+            config.os,
+        )
+        if value
+    ]
+    keyboard = config.extras.get("Keyboard")
+    if keyboard:
+        parts.append(f"键盘: {keyboard}")
+    if parts:
+        return " · ".join(parts)
+    if config.extras:
+        return "配置待确认"
+    summary = record.get("summary")
+    return summary if isinstance(summary, str) and summary.strip() else "配置待确认"
+
+
 def format_message(event: DomainEvent, product: Product) -> str:
     name = product.name or "监控商品"
-    config = (product.configuration or {}).get("summary", "配置待确认")
+    config = _message_configuration(product.configuration)
     time = event.observed_at.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
     labels = {
         "initial_observation": "首次价格",

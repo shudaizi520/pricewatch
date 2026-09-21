@@ -47,7 +47,7 @@ def configuration_rows(
         if isinstance(record.get(key), str) and str(record[key]).strip()
     ]
     extras = record.get("extras")
-    if include_extras and isinstance(extras, dict):
+    if isinstance(extras, dict):
         known = {value for _, value in rows}
         for key, value in extras.items():
             if (
@@ -55,6 +55,7 @@ def configuration_rows(
                 and isinstance(value, str)
                 and value.strip()
                 and value not in known
+                and (include_extras or key == "Keyboard")
             ):
                 rows.append((EXTRA_LABELS.get(key, key), value.strip()))
     if rows:
@@ -64,3 +65,9 @@ def configuration_rows(
         return []
     values = [part.strip() for part in summary.split(" · ") if part.strip()]
     return [(_legacy_label(value), value) for value in values]
+
+
+def secondary_configuration_rows(record: dict[str, object] | None) -> list[tuple[str, str]]:
+    """Additional page details that should not dominate a monitor card."""
+    primary = configuration_rows(record)
+    return [row for row in configuration_rows(record, include_extras=True) if row not in primary]

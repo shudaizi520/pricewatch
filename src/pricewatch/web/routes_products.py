@@ -19,7 +19,7 @@ from pricewatch.domain.products import Money, ProductSnapshot
 from pricewatch.fetching.dell_options import catalog_from_html
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
-from pricewatch.web.configuration import configuration_rows
+from pricewatch.web.configuration import configuration_rows, secondary_configuration_rows
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
 from pricewatch.web.timezone import beijing_label, beijing_time
 
@@ -107,9 +107,8 @@ async def dashboard(request: Request) -> Response:
                     if latest
                     else None,
                     "sparkline": _sparkline(observations),
-                    "configuration_rows": configuration_rows(
-                        product.configuration, include_extras=True
-                    ),
+                    "configuration_rows": configuration_rows(product.configuration),
+                    "secondary_rows": secondary_configuration_rows(product.configuration),
                     "display_price": _display_price(latest.currency, latest.price_minor)
                     if latest
                     else "—",

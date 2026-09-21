@@ -1,0 +1,41 @@
+.product-card,
+.card-select,
+.card-select > * {
+  min-width: 0;
+}
+
+.card-select h3,
+.config-rows dt,
+.config-rows dd {
+  overflow-wrap: anywhere;
+}
+
+.secondary-config {
+  border-top: 1px solid var(--line);
+  padding: 10px 0 12px;
+}
+
+.secondary-config summary {
+  color: var(--brand);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.secondary-config .config-rows {
+  margin: 10px 0 0;
+}
+
+.secondary-config .config-rows > div {
+  grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
+}
+
+.product-grid[data-view="list"] .card-select {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(140px, .8fr);
+}
+
+@media (max-width: 760px) {
+  .product-grid[data-view="list"] .card-select {
+    display: flex;
+  }
+}

@@ -13,7 +13,7 @@ from pricewatch.adapters.base import ExtractionError
 from pricewatch.adapters.registry import AdapterRegistry
 from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.domain.events import DomainEvent
-from pricewatch.domain.products import ProductSnapshot
+from pricewatch.domain.products import ProductConfiguration, ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.services.notifications import NotificationService, format_message
@@ -133,7 +133,19 @@ class CheckService:
                         {"sku": snapshot.identity.sku},
                     )
                 )
-            elif previous is not None and previous.configuration_fingerprint != fingerprint:
+            elif (
+                previous is not None
+                and (
+                    ProductConfiguration.from_record(previous.configuration).fingerprint()
+                    if previous.configuration
+                    and any(
+                        key in previous.configuration
+                        for key in ("cpu", "gpu", "memory", "storage", "display", "os", "extras")
+                    )
+                    else previous.configuration_fingerprint
+                )
+                != fingerprint
+            ):
                 product.status = "needs_attention"
                 events.append(
                     DomainEvent(
@@ -142,7 +154,11 @@ class CheckService:
                         now,
                         {
                             "fingerprint": previous.configuration_fingerprint,
-                            "summary": (previous.configuration or {}).get("summary"),
+                            "summary": (
+                                ProductConfiguration.from_record(previous.configuration).summary()
+                                if previous.configuration
+                                else None
+                            ),
                         },
                         {"fingerprint": fingerprint, "summary": snapshot.configuration.summary()},
                     )

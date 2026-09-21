@@ -14,6 +14,22 @@ def _normalize(value: str | None) -> str:
     return re.sub(r"[^\w]", "", value.casefold(), flags=re.UNICODE)
 
 
+_NON_PRICE_EXTRA_GROUPS = frozenset(
+    _normalize(name)
+    for name in (
+        "Operating System Languages",
+        "Wireless",
+        "Primary Battery",
+        "Power Supply",
+        "Documentation",
+        "Power Cord",
+        "Camera",
+        "Keep - specific to Alienware",
+        "Base Warranty",
+    )
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Money:
     currency: str
@@ -54,27 +70,58 @@ class ProductConfiguration:
     os: str | None = None
     extras: dict[str, str] = field(default_factory=dict)
 
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "ProductConfiguration":
+        def value(key: str) -> str | None:
+            raw = record.get(key)
+            return raw if isinstance(raw, str) else None
+
+        raw_extras = record.get("extras")
+        extras = (
+            {
+                key: item
+                for key, item in raw_extras.items()
+                if isinstance(key, str) and isinstance(item, str)
+            }
+            if isinstance(raw_extras, dict)
+            else {}
+        )
+        return cls(
+            cpu=value("cpu"),
+            gpu=value("gpu"),
+            memory=value("memory"),
+            storage=value("storage"),
+            display=value("display"),
+            os=value("os"),
+            extras=extras,
+        )
+
     def fingerprint(self) -> str:
         parts: dict[str, object] = {
             key: _normalize(getattr(self, key))
             for key in ("cpu", "gpu", "memory", "storage", "display", "os")
         }
-        parts["extras"] = {key: _normalize(value) for key, value in sorted(self.extras.items())}
+        parts["extras"] = {
+            key: _normalize(value)
+            for key, value in sorted(self.extras.items())
+            if _normalize(key) not in _NON_PRICE_EXTRA_GROUPS
+        }
         payload = json.dumps(parts, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
     def summary(self) -> str:
-        return " · ".join(
+        parts = [
             value
             for value in (self.cpu, self.gpu, self.memory, self.storage, self.display)
             if value
-        )
+        ]
+        if keyboard := self.extras.get("Keyboard"):
+            parts.append(f"键盘: {keyboard}")
+        return " · ".join(parts)
 
     def as_record(self) -> dict[str, object]:
         fields = ("cpu", "gpu", "memory", "storage", "display", "os")
-        record: dict[str, object] = {
-            key: value for key in fields if (value := getattr(self, key))
-        }
+        record: dict[str, object] = {key: value for key in fields if (value := getattr(self, key))}
         record["extras"] = self.extras
         record["summary"] = self.summary()
         return record

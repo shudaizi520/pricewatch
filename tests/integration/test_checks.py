@@ -55,6 +55,66 @@ def test_configuration_change_pauses_comparison(check_service):
         assert session.scalar(trusted_count) == 1
 
 
+def test_legacy_fingerprint_and_non_price_extras_do_not_send_configuration_alert(check_service):
+    service, factory, product_id = check_service
+
+    def offer(wireless):
+        return ProductSnapshot(
+            ProductIdentity("dell-us", "sku_01"),
+            "https://www.dell.com/en-us/shop/spd/x/sku_01",
+            "Alienware",
+            ProductConfiguration(
+                gpu="RTX 5090",
+                extras={"Keyboard": "CherryMX", "Wireless": wireless},
+            ),
+            Money("USD", 299999),
+            availability="in_stock",
+        )
+
+    service.accept_snapshot(product_id, offer("Wi-Fi 7 A"))
+    with factory.begin() as session:
+        prior = session.scalar(select(Observation).where(Observation.product_id == product_id))
+        prior.configuration_fingerprint = "a" * 64  # Stored with the former all-extras rule.
+    outcome = service.accept_snapshot(product_id, offer("Wi-Fi 7 B"))
+    assert outcome.events == []
+    assert outcome.product.status == "active"
+    assert outcome.product.configuration["extras"]["Wireless"] == "Wi-Fi 7 B"
+
+
+def test_keyboard_change_alert_names_both_keyboards_without_folded_options(check_service):
+    service, factory, product_id = check_service
+
+    def offer(keyboard, wireless):
+        return ProductSnapshot(
+            ProductIdentity("dell-us", "sku_01"),
+            "https://www.dell.com/en-us/shop/spd/x/sku_01",
+            "Alienware",
+            ProductConfiguration(
+                gpu="RTX 5090", extras={"Keyboard": keyboard, "Wireless": wireless}
+            ),
+            Money("USD", 299999),
+        )
+
+    service.accept_snapshot(product_id, offer("Standard keyboard", "Wi-Fi 7 A"))
+    with factory.begin() as session:
+        prior = session.scalar(select(Observation).where(Observation.product_id == product_id))
+        legacy_record = dict(prior.configuration)
+        legacy_record["summary"] = "RTX 5090"  # Older records omitted keyboard.
+        prior.configuration = legacy_record
+    outcome = service.accept_snapshot(product_id, offer("CherryMX keyboard", "Wi-Fi 7 B"))
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+    with factory() as session:
+        alert = session.scalar(
+            select(NotificationDelivery).where(
+                NotificationDelivery.event_type == "configuration_changed"
+            )
+        )
+        assert alert is not None
+        assert "原配置: RTX 5090 · 键盘: Standard keyboard" in alert.message_text
+        assert "新配置: RTX 5090 · 键盘: CherryMX keyboard" in alert.message_text
+        assert "Wi-Fi 7" not in alert.message_text
+
+
 def test_unchanged_checks_store_at_most_one_daily_checkpoint(check_service):
     service, factory, product_id = check_service
     for hour in (1, 7, 13, 19):

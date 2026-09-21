@@ -130,6 +130,32 @@ def test_duplicate_event_is_not_sent_twice(environment):
         assert len(session.scalars(select(NotificationDelivery)).all()) == 1
 
 
+def test_feishu_price_message_omits_folded_options_but_identifies_keyboard(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.configuration = {
+            "gpu": "RTX 5090",
+            "summary": "RTX 5090 · Killer Wi-Fi 7 · 360W power",
+            "extras": {
+                "Keyboard": "CherryMX",
+                "Wireless": "Killer Wi-Fi 7",
+                "Power Supply": "360W power",
+                "Documentation": "No Documentation",
+            },
+        }
+    with factory() as session:
+        product = session.get(Product, product_id)
+        body = format_message(price_event(product_id), product)
+    assert "RTX 5090" in body
+    assert "CherryMX" in body
+    assert "Killer Wi-Fi 7" not in body
+    assert "360W power" not in body
+    assert "No Documentation" not in body
+
+
 def test_failed_delivery_retries_without_new_logical_event(environment):
     factory, product_id = environment
     transport = FakeTransport((False, True))
