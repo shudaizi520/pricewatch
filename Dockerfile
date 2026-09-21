@@ -1,10 +1,10 @@
-FROM python:3.12-slim-bookworm AS wheels
+FROM python:3.12-slim-trixie AS wheels
 WORKDIR /build
 COPY pyproject.toml constraints.txt ./
 COPY src ./src
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels --constraint constraints.txt .
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
