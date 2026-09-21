@@ -6,7 +6,7 @@ versions and licenses will be generated from the release lock during packaging.
 | Package | License | Source |
 |---|---|---|
 | Alembic | MIT | https://github.com/sqlalchemy/alembic |
-| Apprise | MIT | https://github.com/caronc/apprise |
+| Apprise (Feishu delivery) | MIT | https://github.com/caronc/apprise |
 | APScheduler | MIT | https://github.com/agronholm/apscheduler |
 | argon2-cffi | MIT | https://github.com/hynek/argon2-cffi |
 | Beautiful Soup | MIT | https://www.crummy.com/software/BeautifulSoup/ |

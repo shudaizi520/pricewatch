@@ -14,6 +14,7 @@ from pricewatch.db.models import CheckRun, Observation, Product
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline
+from pricewatch.services.notifications import NotificationService
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
 
@@ -39,11 +40,18 @@ class CheckService:
         pipeline: AcquisitionPipeline | None = None,
         registry: AdapterRegistry | None = None,
         dell_lookup: Callable[[str], Awaitable[list[ProductSnapshot]]] | None = None,
+        notifier: NotificationService | None = None,
     ) -> None:
         self.factory = factory
         self.pipeline = pipeline
         self.registry = registry or AdapterRegistry()
         self.dell_lookup = dell_lookup
+        self.notifier = notifier
+
+    def _notify(self, events: list[DomainEvent]) -> None:
+        if self.notifier is not None:
+            for event in events:
+                self.notifier.deliver(event)
 
     def accept_snapshot(
         self,
@@ -197,6 +205,7 @@ class CheckService:
             )
             session.flush()
             session.expunge(product)
+        self._notify(events)
         return CheckOutcome(
             product, events, "ok" if product.status != "needs_attention" else "needs_attention"
         )
@@ -228,6 +237,7 @@ class CheckService:
             )
             session.flush()
             session.expunge(product)
+        self._notify(events)
         return CheckOutcome(product, events, "failed")
 
     async def check_product(self, product_id: int, trigger: CheckTrigger) -> CheckOutcome:
