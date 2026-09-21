@@ -106,3 +106,19 @@ def test_failed_delivery_retries_without_new_logical_event(environment):
         assert len(rows) == 1
         assert rows[0].attempts == 2
         assert rows[0].status == "sent"
+
+
+def test_failed_delivery_can_retry_after_restart(environment):
+    factory, product_id = environment
+    failed = FakeTransport((False,))
+    first = NotificationService(
+        factory, SecretStr("feishu://0123456789abcdef0123456789abcdef"), failed
+    )
+    first.deliver(price_event(product_id))
+    successful = FakeTransport((True,))
+    restarted = NotificationService(
+        factory, SecretStr("feishu://0123456789abcdef0123456789abcdef"), successful
+    )
+    assert restarted.retry_failed() == 1
+    assert "$2,900.00" in successful.messages[0]
+    assert restarted.retry_failed() == 0

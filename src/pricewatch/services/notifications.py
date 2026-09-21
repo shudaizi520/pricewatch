@@ -127,6 +127,7 @@ class NotificationService:
             row.attempts = (row.attempts or 0) + 1
             row.status = "pending"
             message = format_message(event, product)
+            row.message_text = message
         try:
             sent = self.transport.send(self.destination, "PriceWatch", message)
         except Exception:
@@ -139,3 +140,32 @@ class NotificationService:
                 row.status = "sent" if sent else "failed"
                 row.last_error = None if sent else "通知发送失败 请检查飞书配置或网络"
         return DeliveryResult(sent, "sent" if sent else "failed")
+
+    def retry_failed(self) -> int:
+        """Retry prior messages without creating a new logical event."""
+        with self.factory() as session:
+            identifiers = session.scalars(
+                select(NotificationDelivery.id).where(
+                    NotificationDelivery.status == "failed", NotificationDelivery.attempts < 3
+                )
+            ).all()
+        delivered = 0
+        for identifier in identifiers:
+            with self.factory.begin() as session:
+                row = session.get(NotificationDelivery, identifier)
+                if row is None or row.status != "failed" or not row.message_text:
+                    continue
+                row.attempts += 1
+                row.status = "pending"
+                message = row.message_text
+            try:
+                sent = self.transport.send(self.destination, "PriceWatch", message)
+            except Exception:
+                sent = False
+            with self.factory.begin() as session:
+                row = session.get(NotificationDelivery, identifier)
+                if row is not None:
+                    row.status = "sent" if sent else "failed"
+                    row.last_error = None if sent else "通知发送失败 请检查飞书配置或网络"
+            delivered += int(sent)
+        return delivered
