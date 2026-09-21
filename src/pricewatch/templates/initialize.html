@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>初始化 PriceWatch</title></head>
+  <body>
+    <main>
+      <h1>创建管理员</h1>
+      {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+      <form method="post" action="/initialize">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>账号 <input name="username" autocomplete="username" required></label>
+        <label>密码 <input name="password" type="password" autocomplete="new-password" required></label>
+        <button type="submit">创建并进入</button>
+      </form>
+    </main>
+  </body>
+</html>

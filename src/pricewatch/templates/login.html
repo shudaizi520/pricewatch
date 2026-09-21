@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>登录 PriceWatch</title></head>
+  <body>
+    <main>
+      <h1>登录</h1>
+      {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+      <form method="post" action="/login">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label>账号 <input name="username" autocomplete="username" required></label>
+        <label>密码 <input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">登录</button>
+      </form>
+    </main>
+  </body>
+</html>
