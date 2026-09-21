@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}添加商品 · PriceWatch{% endblock %}
+{% block content %}
+<a class="back" href="/">← 返回监控</a>
+<div class="page-head"><div><div class="eyebrow">NEW MONITOR</div><h1>添加商品</h1><p class="muted">先读取页面，确认价格和配置后保存。</p></div></div>
+<section class="panel form-panel">
+  <form action="/products/preview" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="product-url">商品链接</label>
+    <input id="product-url" type="url" name="url" placeholder="https://www.dell.com/en-us/..." autocomplete="url" required>
+    <p class="hint">优先支持美国戴尔；其他商店视页面价格数据而定。</p>
+    <button type="submit" class="button primary">读取并预览</button>
+  </form>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+</section>
+{% if preview %}
+<section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2><p class="config">{{ preview.configuration.summary() or '配置尚未识别' }}</p><div class="preview-price">{{ '$' if preview.price.currency == 'USD' else preview.price.currency ~ ' ' }}{{ '%.2f' | format(preview.price.minor / 100) }}</div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
+  <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并开始监控</button></form>
+</section>
+{% endif %}
+{% endblock %}

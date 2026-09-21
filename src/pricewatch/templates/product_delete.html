@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}删除商品 · PriceWatch{% endblock %}
+{% block content %}
+<a class="back" href="/products/{{ product.id }}">← 返回商品</a>
+<section class="panel form-panel"><h1>永久删除商品</h1><p class="muted">{{ product.name or product.requested_url }} 的历史记录和通知日志将无法恢复。请先确认备份。</p>
+  <form method="post" action="/products/{{ product.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label for="confirmation">输入 DELETE 确认</label><input id="confirmation" name="confirmation" autocomplete="off" required><button type="submit" class="button">永久删除</button></form>
+</section>
+{% endblock %}

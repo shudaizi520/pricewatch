@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="{{ admin.theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}PriceWatch{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/"><span class="mark" aria-hidden="true">⌁</span><span>PriceWatch</span></a>
+      <nav aria-label="主导航" class="nav">
+        <a href="/" class="{% if request.url.path == '/' %}selected{% endif %}">监控</a>
+        <a href="/settings">通知与设置</a>
+        <a href="/status">状态</a>
+      </nav>
+      <div class="header-actions">
+        <form method="post" action="/theme" class="theme-picker" aria-label="外观">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" name="theme" value="light" aria-label="浅色" title="浅色">☀</button>
+          <button type="submit" name="theme" value="dark" aria-label="深色" title="深色">☾</button>
+          <button type="submit" name="theme" value="system" aria-label="跟随系统" title="跟随系统">◐</button>
+        </form>
+        <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">退出</button></form>
+      </div>
+    </div>
+  </header>
+  <main class="container">{% block content %}{% endblock %}</main>
+  <footer class="footer">PriceWatch · 你的私有价格观察台</footer>
+</body>
+</html>
