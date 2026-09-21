@@ -1,7 +1,12 @@
 # Third-Party Notices
 
-PriceWatch depends on the following directly imported open-source packages. Exact transitive
-versions and licenses will be generated from the release lock during packaging.
+PriceWatch depends on the following directly imported open-source packages. Production version
+constraints are in `constraints.txt`; CI generates a transitive dependency and license inventory
+before any release. That inventory must be reviewed against the built image.
+
+The image also installs Playwright's Chromium headless-shell and its system libraries. Chromium
+contains BSD-style and other third-party license notices that ship with the upstream browser
+distribution; the image build should be checked using the CI license inventory before release.
 
 | Package | License | Source |
 |---|---|---|

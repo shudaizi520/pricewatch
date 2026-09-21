@@ -1,0 +1,50 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -c constraints.txt -e '.[test]' pip-audit pip-licenses
+      - run: python -m playwright install --with-deps --only-shell chromium
+      - run: ruff check src tests alembic
+      - run: mypy src/pricewatch
+      - run: python -m pytest -q --cov=pricewatch --cov-report=term-missing
+      - run: alembic upgrade head
+        env:
+          PRICEWATCH_DATABASE_URL: sqlite:////tmp/pricewatch-ci.db
+      - run: pip-audit
+      - run: pip-licenses --format=markdown --with-urls
+      - run: git grep -nE 'AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}' -- ':!tests' ':!docs' || test $? -eq 1
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pricewatch:ci .
+      - name: Smoke test container health and bundled Chromium
+        run: |
+          docker run -d --name pricewatch-ci --tmpfs /data:rw,uid=10001,gid=10001 -e PRICEWATCH_APP_SECRET_KEY=ci-only-long-random-placeholder-secret-000001 -p 127.0.0.1:18080:8080 pricewatch:ci
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          docker exec pricewatch-ci python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+      - name: Remove smoke container
+        if: always()
+        run: docker rm -f pricewatch-ci || true
+      - name: Container vulnerability scan
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: pricewatch:ci
+          severity: CRITICAL,HIGH
+          exit-code: '1'

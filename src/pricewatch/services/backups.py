@@ -4,6 +4,7 @@ import hashlib
 import os
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,7 +41,7 @@ class BackupService:
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
             if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("备份数据库校验失败")
         return BackupManifest(digest.hexdigest(), path.stat().st_size)
@@ -55,8 +56,8 @@ class BackupService:
         temporary = Path(temporary_name)
         try:
             with (
-                sqlite3.connect(str(self.database)) as source,
-                sqlite3.connect(str(temporary)) as target,
+                closing(sqlite3.connect(str(self.database))) as source,
+                closing(sqlite3.connect(str(temporary))) as target,
             ):
                 source.backup(target)
             with temporary.open("rb") as stream:
@@ -96,8 +97,8 @@ class BackupService:
         # The caller must stop the web process before restoring the database.
         self.create("pre_restore")
         with (
-            sqlite3.connect(str(path)) as source,
-            sqlite3.connect(str(self.database)) as target,
+            closing(sqlite3.connect(str(path))) as source,
+            closing(sqlite3.connect(str(self.database))) as target,
         ):
             source.backup(target)
             target.execute("PRAGMA wal_checkpoint(TRUNCATE)")

@@ -23,6 +23,8 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 async def client(settings: Settings):
-    transport = ASGITransport(app=create_app(settings))
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client
+    app.state.engine.dispose()

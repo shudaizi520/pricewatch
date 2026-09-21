@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import SecretStr
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.sessions import SessionMiddleware
 
 from pricewatch import __version__
@@ -97,6 +99,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:
+        try:
+            with session_factory() as session:
+                session.execute(text("SELECT 1"))
+        except SQLAlchemyError as error:
+            raise HTTPException(503, "database unavailable") from error
         return {"status": "ok", "version": __version__}
 
     return app
