@@ -150,7 +150,6 @@ async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch):
 async def test_other_dell_product_does_not_require_area_51_option_grid(
     monkeypatch, desktop_url
 ):
-
     class FakePage:
         url = desktop_url
 
