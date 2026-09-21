@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}商品监控 · PriceWatch{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><div class="eyebrow">OVERVIEW</div><h1>商品监控</h1><p class="muted">价格有变化时，再让飞书告诉你。</p></div>
+  <a class="button primary" href="/products/new"><span aria-hidden="true">＋</span> 添加商品</a>
+</div>
+<section class="stats" aria-label="监控概况">
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">◉</span><div><strong>{{ cards | selectattr('product.status', 'equalto', 'active') | list | length }}</strong><span>正在监控</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">↘</span><div><strong>{% set lows = cards | selectattr('lowest') | map(attribute='lowest') | list %}{% if lows %}${{ '%.2f' | format((lows | min) / 100) }}{% else %}—{% endif %}</strong><span>已记录最低价</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">⌁</span><div><strong>每 6 小时</strong><span>默认检查周期 · 北京时间</span></div></div>
+</section>
+<div class="section-heading"><h2>监控列表 <small class="muted">{{ cards | length }} 件商品</small></h2><div class="view-toggle" role="group" aria-label="布局选择"><button type="button" data-view-choice="cards" aria-pressed="true">卡片</button><button type="button" data-view-choice="list" aria-pressed="false">列表</button></div></div>
+{% if cards %}
+<section class="product-grid" aria-label="监控商品">
+{% for card in cards %}
+  {% set product = card.product %}{% set latest = card.latest %}
+  <a class="product-card" href="/products/{{ product.id }}">
+    <div class="card-top"><span class="site">{{ 'DELL · US' if product.source_site == 'dell-us' else product.source_site | upper }}</span><span class="badge {{ product.status }}">{{ '配置待确认' if product.status == 'needs_attention' else '已暂停' if product.status == 'paused' else '监控中' }}</span></div>
+    <h3>{{ product.name or '等待首次检查' }}</h3>
+    <p class="config">{{ product.configuration.summary if product.configuration else '正在识别商品配置' }}</p>
+    <div class="price-block"><div><span class="price">{% if latest %}${{ '%.2f' | format(latest.price_minor / 100) }}{% else %}—{% endif %}</span><span class="currency">{{ latest.currency if latest else '' }}</span></div><svg class="sparkline" viewBox="0 0 135 48" aria-label="近期价格走势" role="img"><polyline points="{{ card.sparkline }}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <div class="card-bottom"><span>{% if card.lowest is not none %}最低 ${{ '%.2f' | format(card.lowest / 100) }}{% else %}尚无价格记录{% endif %}</span><span>每 {{ product.check_interval_hours }} 小时 ↗</span></div>
+  </a>
+{% endfor %}
+</section>
+{% else %}
+<section class="empty"><span class="empty-icon" aria-hidden="true">⌁</span><h2>从第一件商品开始</h2><p>粘贴美国戴尔商品链接，先确认配置和价格，再开始监控。</p><a class="button primary" href="/products/new">添加商品</a></section>
+{% endif %}
+{% endblock %}

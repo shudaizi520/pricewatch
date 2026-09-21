@@ -51,7 +51,8 @@ def test_configuration_change_pauses_comparison(check_service):
     assert outcome.product.status == "needs_attention"
     assert [e.kind for e in outcome.events] == ["configuration_changed"]
     with factory() as session:
-        assert session.scalar(select(func.count(Observation.id))) == 1
+        trusted_count = select(func.count(Observation.id)).where(Observation.trusted.is_(True))
+        assert session.scalar(trusted_count) == 1
 
 
 def test_unchanged_checks_store_at_most_one_daily_checkpoint(check_service):

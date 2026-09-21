@@ -2,8 +2,10 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from pricewatch import __version__
@@ -15,6 +17,7 @@ from pricewatch.fetching.http import HttpFetcher
 from pricewatch.services.checks import CheckService
 from pricewatch.services.scheduler import SchedulerService
 from pricewatch.web.routes_auth import router as auth_router
+from pricewatch.web.routes_products import router as products_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -41,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.check_service = checker
     app.state.scheduler = scheduler
+    app.state.previews = {}
     secure_cookie = bool(
         resolved.external_url and str(resolved.external_url).startswith("https://")
     )
@@ -53,6 +57,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         https_only=secure_cookie,
     )
     app.include_router(auth_router)
+    app.include_router(products_router)
+    app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:

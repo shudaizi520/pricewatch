@@ -68,7 +68,13 @@ class CheckService:
                 raise LookupError("Product not found")
             previous = session.scalar(
                 select(Observation)
-                .where(Observation.product_id == product_id)
+                .where(Observation.product_id == product_id, Observation.trusted.is_(True))
+                .order_by(Observation.observed_at.desc(), Observation.id.desc())
+                .limit(1)
+            )
+            pending = session.scalar(
+                select(Observation)
+                .where(Observation.product_id == product_id, Observation.trusted.is_(False))
                 .order_by(Observation.observed_at.desc(), Observation.id.desc())
                 .limit(1)
             )
@@ -194,6 +200,32 @@ class CheckService:
                     product.configuration_fingerprint = fingerprint
                     product.configuration = {"summary": snapshot.configuration.summary()}
                     product.last_success_at = now
+            if product.status == "needs_attention":
+                if pending is None or pending.configuration_fingerprint != fingerprint:
+                    session.add(
+                        Observation(
+                            product_id=product_id,
+                            currency=snapshot.price.currency,
+                            price_minor=snapshot.price.minor,
+                            list_price_minor=snapshot.list_price.minor
+                            if snapshot.list_price
+                            else None,
+                            discount_text=snapshot.discount_text,
+                            coupon_text=snapshot.coupon_text,
+                            availability=snapshot.availability,
+                            configuration_fingerprint=fingerprint,
+                            configuration={
+                                "summary": snapshot.configuration.summary(),
+                                "sku": snapshot.identity.sku,
+                                "canonical_url": snapshot.canonical_url,
+                            },
+                            evidence=snapshot.evidence,
+                            observed_at=now,
+                            trusted=False,
+                        )
+                    )
+                elif pending is not None:
+                    events = []
             product.last_checked_at = now
             session.add(
                 CheckRun(
