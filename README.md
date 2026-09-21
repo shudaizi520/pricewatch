@@ -2,7 +2,7 @@
 
 给 TrueNAS 准备的小型价格监控网页：优先识别美国戴尔的 Alienware 商品，记录配置、美元价格与历史，变化时才通过飞书机器人通知。也支持部分提供标准结构化商品数据的其他商店。深浅色界面、单管理员、SQLite，不需要 Redis。
 
-> 当前为待验收的源代码版本。开发环境没有 Docker，也无法取得戴尔网页的真实页面（返回 403）；**尚未在你的 TrueNAS 上验证戴尔价格和飞书实发**，不要据此做购买决策。首次部署请按下方验收步骤核对。
+> 当前为待验收的源代码版本。开发环境没有 Docker；从 TrueNAS 命令行请求参考戴尔页面也返回 403，浏览器兜底仍待实测。**尚未在你的 TrueNAS 上验证戴尔价格和飞书实发**，不要据此做购买决策。首次部署请按下方验收步骤核对。
 
 ## 在 TrueNAS 安装
 
@@ -48,6 +48,6 @@ Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR �
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开。当前工作区没有配置 GitHub remote，也没有发布 GHCR 镜像。创建公开仓库后先让 CI 在 Python 3.12 和 Docker 构建上通过，并完成 TrueNAS 实机验收。稳定版发布工作流需要配置受保护的 `production` environment、仓库变量 `RELEASE_SIGNING_PUBLIC_KEY`、签名的 `v1.0.0` 类 tag；人工触发工作流后发布 `linux/amd64` 的 `1.0.0`、`1.0`、`1` 和 `latest`。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR 镜像尚未发布；先让 CI 在 Python 3.12 和 Docker 构建上通过，并完成 TrueNAS 实机验收。稳定版发布工作流需要配置受保护的 `production` environment、仓库变量 `RELEASE_SIGNING_PUBLIC_KEY`、签名的 `v1.0.0` 类 tag；人工触发工作流后发布 `linux/amd64` 的 `1.0.0`、`1.0`、`1` 和 `latest`。不要将 `.env` 或真实 Webhook 推上去。
 
 依赖/许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
