@@ -38,3 +38,13 @@ def test_money_rejects_negative_and_bad_currency():
         Money("USD", -1)
     with pytest.raises(ValueError):
         Money("US", 100)
+
+
+def test_configuration_record_keeps_named_hardware_and_legacy_summary():
+    record = ProductConfiguration(
+        cpu="Core Ultra 9", gpu="RTX 5090", extras={"keyboard": "CherryMX"}
+    ).as_record()
+    assert record["cpu"] == "Core Ultra 9"
+    assert record["gpu"] == "RTX 5090"
+    assert record["extras"] == {"keyboard": "CherryMX"}
+    assert record["summary"] == "Core Ultra 9 · RTX 5090"

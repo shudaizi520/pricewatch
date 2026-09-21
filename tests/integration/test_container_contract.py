@@ -5,7 +5,9 @@ from contextlib import closing
 from pathlib import Path
 
 import yaml
+from alembic.config import Config
 
+from alembic import command
 from pricewatch.bootstrap import migrate
 from pricewatch.config import Settings
 
@@ -50,4 +52,29 @@ def test_startup_applies_schema_without_creating_unneeded_backup(tmp_path):
     migrate(settings, ROOT / "alembic.ini")
     migrate(settings, ROOT / "alembic.ini")
     with closing(sqlite3.connect(database)) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001"
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002"
+
+
+def test_upgrade_from_initial_schema_preserves_existing_card(tmp_path):
+    database = tmp_path / "pricewatch.db"
+    settings = Settings(
+        data_dir=tmp_path,
+        database_url=f"sqlite:///{database}",
+        app_secret_key="test-secret-key-that-is-at-least-32-characters",
+    )
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(config, "0001")
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "INSERT INTO products (source_site, requested_url, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("dell-us", "https://www.dell.com/en-us/shop/old", "2026-09-21", "2026-09-21"),
+        )
+        connection.commit()
+    migrate(settings, ROOT / "alembic.ini")
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002"
+        assert connection.execute(
+            "SELECT requested_url, dell_selection FROM products"
+        ).fetchone() == ("https://www.dell.com/en-us/shop/old", None)

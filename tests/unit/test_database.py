@@ -70,3 +70,20 @@ def test_negative_price_is_rejected_by_database(database):
 
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_dell_selection_survives_database_round_trip(database):
+    _, session_factory = database
+    with session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/model",
+            dell_selection={"Graphics Card": "RTX 5090"},
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+    with session_factory() as session:
+        stored = session.get(Product, product_id)
+        assert stored is not None
+        assert stored.dell_selection == {"Graphics Card": "RTX 5090"}

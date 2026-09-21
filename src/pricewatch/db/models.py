@@ -62,6 +62,7 @@ class Product(Base):
     sku: Mapped[str | None] = mapped_column(String(160), index=True)
     model: Mapped[str | None] = mapped_column(String(160))
     configuration: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    dell_selection: Mapped[dict[str, str] | None] = mapped_column(JSON)
     configuration_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(24), default="active", index=True)
     check_interval_hours: Mapped[int] = mapped_column(Integer, default=6)

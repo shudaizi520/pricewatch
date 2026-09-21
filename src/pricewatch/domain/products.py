@@ -70,6 +70,15 @@ class ProductConfiguration:
             if value
         )
 
+    def as_record(self) -> dict[str, object]:
+        fields = ("cpu", "gpu", "memory", "storage", "display", "os")
+        record: dict[str, object] = {
+            key: value for key in fields if (value := getattr(self, key))
+        }
+        record["extras"] = self.extras
+        record["summary"] = self.summary()
+        return record
+
 
 @dataclass(frozen=True, slots=True)
 class ProductSnapshot:
