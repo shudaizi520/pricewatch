@@ -1,6 +1,6 @@
 # PriceWatch Design Specification
 
-**Status:** Draft for written-spec review  
+**Status:** Approved for implementation  
 **Date:** 2026-09-21  
 **Target:** TrueNAS, x86-64, Intel Core i3-12100  
 
