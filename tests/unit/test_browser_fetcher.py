@@ -151,11 +151,15 @@ async def test_dell_browser_does_not_trigger_interception_403(monkeypatch, dell_
 
 
 @pytest.mark.anyio
-async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch):
-    dell_url = (
+@pytest.mark.parametrize(
+    "dell_url",
+    [
         "https://www.dell.com/en-us/shop/laptop-computers/spd/"
-        "alienware18area51aa18250/aa18250_reg_01"
-    )
+        "alienware18area51aa18250/aa18250_reg_01",
+        "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250",
+    ],
+)
+async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch, dell_url):
 
     class FakePage:
         url = dell_url
