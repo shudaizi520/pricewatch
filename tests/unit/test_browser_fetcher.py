@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from httpx import URL
 
+from pricewatch.adapters.base import ExtractionError
 from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import AcquiredPage
@@ -101,6 +102,30 @@ async def test_pipeline_keeps_both_denials_instead_of_hiding_http_403():
         await pipeline.acquire(URL("https://shop.example/item"), object())
     assert "HTTP 403" in str(captured.value)
     assert "普通请求和浏览器" in str(captured.value)
+
+
+@pytest.mark.anyio
+async def test_pipeline_keeps_http_403_when_browser_challenge_cannot_be_parsed():
+    class DeniedHttp:
+        async def fetch(self, _url):
+            raise AcquisitionError("商品页面返回 HTTP 403", status_code=403)
+
+    class ChallengeBrowser:
+        async def fetch(self, url):
+            return AcquiredPage(
+                str(url), str(url), 200, b"<html>Verify you are human</html>", {},
+                "browser", datetime.now(UTC),
+            )
+
+    class ProductAdapter:
+        def extract(self, _page):
+            raise ExtractionError("页面没有商品价格; 可能是验证页")
+
+    pipeline = AcquisitionPipeline(DeniedHttp(), ChallengeBrowser())
+    with pytest.raises(AcquisitionError) as captured:
+        await pipeline.acquire(URL("https://shop.example/item"), ProductAdapter())
+    assert "HTTP 403" in str(captured.value)
+    assert "验证页" in str(captured.value)
 
 
 @pytest.mark.anyio

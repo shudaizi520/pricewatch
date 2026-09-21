@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from pricewatch.db.models import Observation, Product
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
+from pricewatch.fetching.http import AcquisitionError
 
 
 def csrf(html):
@@ -31,6 +32,31 @@ async def test_dashboard_needs_login(client):
     response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_status_shows_safe_http_failure_detail_after_check(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="www.dell.com",
+            requested_url="https://www.dell.com/zh-cn/shop/spd/example",
+            name="Alienware 18",
+            status="active",
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    class DeniedPipeline:
+        async def acquire(self, _url, _adapter):
+            raise AcquisitionError("普通请求和浏览器都被网站拒绝 (HTTP 403)", status_code=403)
+
+    app.state.check_service.pipeline = DeniedPipeline()
+    await app.state.check_service.check_product(product_id, "manual")
+    response = await admin_client.get("/status")
+    assert response.status_code == 200
+    assert "HTTP 403" in response.text
 
 
 @pytest.mark.anyio

@@ -1,17 +1,19 @@
 from datetime import UTC, datetime
 
 import pytest
+from httpx import URL
 
 from pricewatch.adapters.base import AmbiguousExtraction, ExtractionError
 from pricewatch.adapters.generic import GenericAdapter
+from pricewatch.adapters.registry import AdapterRegistry
 from pricewatch.domain.products import Money
 from pricewatch.fetching.types import AcquiredPage
 
 
-def page(html: str) -> AcquiredPage:
+def page(html: str, url: str = "https://www.hp.com/us-en/shop/pdp/example") -> AcquiredPage:
     return AcquiredPage(
-        "https://www.hp.com/us-en/shop/pdp/example",
-        "https://www.hp.com/us-en/shop/pdp/example",
+        url,
+        url,
         200,
         html.encode(),
         {},
@@ -32,13 +34,14 @@ def test_generic_adapter_accepts_schema_org_product():
 
 
 def test_generic_adapter_accepts_lowercase_iso_currency_from_dell_china():
+    url = "https://www.dell.com/zh-cn/shop/dell-laptops/spd/alienware18area51aa18250"
     html = (
         '<script type="application/ld+json">{"@type":"Product",'
         '"name":"Alienware 外星人 18 Area-51 游戏笔记本",'
         '"sku":"aa18250_reg_01",'
         '"offers":{"price":"37414.3","priceCurrency":"cny"}}</script>'
     )
-    snapshot = GenericAdapter().extract(page(html))
+    snapshot = AdapterRegistry().for_url(URL(url)).extract(page(html, url))
     assert snapshot.identity.sku == "aa18250_reg_01"
     assert snapshot.price == Money("CNY", 3741430)
 

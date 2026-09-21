@@ -106,9 +106,11 @@ class AcquisitionPipeline:
         except (AcquisitionError, ExtractionError) as first_error:
             try:
                 page = await self.browser.fetch(url)
-            except AcquisitionError as browser_error:
+                return page, adapter.extract(page)
+            except (AcquisitionError, ExtractionError) as browser_error:
                 if (
                     isinstance(first_error, AcquisitionError)
+                    and isinstance(browser_error, AcquisitionError)
                     and first_error.status_code == browser_error.status_code == 403
                 ):
                     raise AcquisitionError(
@@ -118,4 +120,3 @@ class AcquisitionPipeline:
                 raise AcquisitionError(
                     f"普通请求失败: {first_error}; 浏览器请求失败: {browser_error}"
                 ) from browser_error
-            return page, adapter.extract(page)

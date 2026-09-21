@@ -11,7 +11,7 @@
 1. 将此项目放到 TrueNAS 可执行 Compose 的位置，并在 TrueNAS 创建一个专用持久数据集，例如 `/mnt/POOL/apps/pricewatch`。让容器用户 `10001:10001` 对该数据集有读写权限。不要把数据集放在 Git 仓库里。
 2. 复制 `.env.example` 为 `.env`；将 `PRICEWATCH_DATA_PATH` 改成上述绝对路径。用 `openssl rand -hex 32` 生成一次 `PRICEWATCH_APP_SECRET_KEY`，将结果只写入 `.env`，不要提交到 GitHub。**以后保持这个密钥不变**，否则已加密的飞书配置无法解密。
 3. 在项目目录运行 `docker compose up -d --build`。默认只监听本机 `127.0.0.1:8080`。在同机浏览器访问 `http://127.0.0.1:8080`，首次创建一个管理员账号。网页注册只开放这一次。
-   当前 TrueNAS 试用实例暂时把 `./src` 只读挂载到容器的 `/app/src`，以便在本地镜像重建失败时更新应用代码；这不替代依赖变更时的镜像重建。修改源码后仍需重新部署应用。
+   当前 TrueNAS 试用实例在本地镜像重建失败后，临时将 `./src` 只读挂载到容器的 `/app/src`。需要复现时，可显式启用 `docker-compose.source.yml` 覆盖文件；正式使用版本化镜像升级或回退时不要启用此覆盖文件，以免宿主机源码覆盖镜像代码。依赖变更仍须重建镜像。
 4. 若反向代理不在 TrueNAS 本机，先把 `.env` 中的 `PRICEWATCH_BIND` 改为仅反代能访问的 TrueNAS 局域网地址，再配置反代。对公网务必使用 HTTPS，将 `.env` 的 `PRICEWATCH_EXTERNAL_URL` 设为完整 HTTPS 地址，再执行 `docker compose up -d`。在反代传递 `Host`、`X-Forwarded-Proto`，并限制管理页面的公开访问范围。若代理与容器同网络但不在主机回环上，需要按实际网络拓扑调整端口绑定。
 
 Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR 版本时，可以在 `.env` 的 `PRICEWATCH_IMAGE` 改为明确版本（例如 `ghcr.io/你的账号/pricewatch:1.0.0`），先 `docker compose pull`，再 `docker compose up -d`。不要依赖 `latest` 回滚。
