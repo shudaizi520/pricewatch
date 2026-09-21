@@ -37,7 +37,11 @@ jobs:
             if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:18080/healthz
+          if ! curl -fsS http://127.0.0.1:18080/healthz; then
+            docker inspect --format '{{.State.Status}} (exit {{.State.ExitCode}}): {{.State.Error}}' pricewatch-ci
+            docker logs pricewatch-ci
+            exit 1
+          fi
           docker exec pricewatch-ci python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(viewport={'width':390,'height':844}); page.goto('http://127.0.0.1:8080/initialize'); page.get_by_label('账号').fill('owner'); page.get_by_label('密码').fill('VeryStrongSecret123!'); page.get_by_role('button',name='创建并进入').click(); assert page.get_by_role('heading',name='商品监控').is_visible(); page.get_by_role('button',name='深色').click(); page.reload(); assert page.locator('html').get_attribute('data-theme')=='dark'; b.close(); p.stop()"
       - name: Remove smoke container
         if: always()
