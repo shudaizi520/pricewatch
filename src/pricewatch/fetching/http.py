@@ -12,6 +12,10 @@ from pricewatch.fetching.types import AcquiredPage
 class AcquisitionError(RuntimeError):
     """A product page cannot be acquired within the configured limits."""
 
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class HttpFetcher:
     def __init__(
@@ -59,7 +63,10 @@ class HttpFetcher:
                             current = httpx.URL(urljoin(str(current), location))
                             continue
                         if response.status_code >= 400:
-                            raise AcquisitionError(f"HTTP {response.status_code} from product page")
+                            raise AcquisitionError(
+                                f"商品页面返回 HTTP {response.status_code}",
+                                status_code=response.status_code,
+                            )
                         chunks: list[bytes] = []
                         size = 0
                         async for chunk in response.aiter_bytes():

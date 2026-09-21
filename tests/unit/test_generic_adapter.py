@@ -31,6 +31,18 @@ def test_generic_adapter_accepts_schema_org_product():
     assert snapshot.configuration.gpu is None
 
 
+def test_generic_adapter_accepts_lowercase_iso_currency_from_dell_china():
+    html = (
+        '<script type="application/ld+json">{"@type":"Product",'
+        '"name":"Alienware 外星人 18 Area-51 游戏笔记本",'
+        '"sku":"aa18250_reg_01",'
+        '"offers":{"price":"37414.3","priceCurrency":"cny"}}</script>'
+    )
+    snapshot = GenericAdapter().extract(page(html))
+    assert snapshot.identity.sku == "aa18250_reg_01"
+    assert snapshot.price == Money("CNY", 3741430)
+
+
 def test_ambiguous_prices_require_confirmation():
     html = (
         '<script type="application/ld+json">{"@type":"Product","name":"OMEN",'

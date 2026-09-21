@@ -49,7 +49,7 @@ class GenericAdapter:
             if price is None or currency is None:
                 continue
             try:
-                money.append(Money.from_decimal(str(currency), str(price)))
+                money.append(Money.from_decimal(str(currency).upper(), str(price)))
             except (ValueError, TypeError):
                 continue
         if not name or not money:
