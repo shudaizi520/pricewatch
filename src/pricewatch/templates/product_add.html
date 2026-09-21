@@ -22,7 +22,7 @@
     <input type="hidden" name="catalog_token" value="{{ catalog_token }}">
     <input type="hidden" name="url" value="{{ url }}">
     {% for group, choices in catalog.items() %}
-      {% if group in ['Processor', 'Graphics Card', 'Memory', 'Storage', 'Displays', 'Operating System'] %}
+      {% if group in ['Processor', 'Graphics Card', 'Memory', 'Storage', 'Displays', 'Operating System', 'Keyboard'] %}
       <label>{{ group }}<select name="option__{{ group }}"><option value="">保持页面默认</option>{% for choice in choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}</select></label>
       {% endif %}
     {% endfor %}

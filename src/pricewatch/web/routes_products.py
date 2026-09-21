@@ -21,9 +21,11 @@ from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
 from pricewatch.web.configuration import configuration_rows
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
+from pricewatch.web.timezone import beijing_label, beijing_time
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parents[1] / "templates")
+templates.env.filters["beijing"] = beijing_label
 
 
 def _context(request: Request, **values: object) -> dict[str, object]:
@@ -68,7 +70,7 @@ def _chart_points(observations: list[Observation]) -> list[dict[str, object]]:
         {
             "x": round(18 + index * 564 / max(len(ordered) - 1, 1)),
             "y": round(58 - (item.price_minor - low) * 40 / span) if span else 58,
-            "date": item.observed_at.strftime("%Y-%m-%d %H:%M"),
+            "date": beijing_label(item.observed_at),
             "price": _display_price(item.currency, item.price_minor),
         }
         for index, item in enumerate(ordered)
@@ -105,7 +107,9 @@ async def dashboard(request: Request) -> Response:
                     if latest
                     else None,
                     "sparkline": _sparkline(observations),
-                    "configuration_rows": configuration_rows(product.configuration),
+                    "configuration_rows": configuration_rows(
+                        product.configuration, include_extras=True
+                    ),
                     "display_price": _display_price(latest.currency, latest.price_minor)
                     if latest
                     else "—",
@@ -536,11 +540,13 @@ async def history_csv(request: Request, product_id: int) -> Response:
         ).all()
         buffer = io.StringIO()
         writer = csv.writer(buffer)
-        writer.writerow(("observed_at_utc", "currency", "price_minor", "price", "availability"))
+        writer.writerow(("observed_at_beijing", "currency", "price_minor", "price", "availability"))
         for row in rows:
+            local_time = beijing_time(row.observed_at)
+            assert local_time is not None
             writer.writerow(
                 (
-                    row.observed_at.replace(tzinfo=UTC).isoformat(),
+                    local_time.isoformat(),
                     row.currency,
                     row.price_minor,
                     f"{row.price_minor / 100:.2f}",

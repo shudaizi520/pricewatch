@@ -11,6 +11,45 @@ from pricewatch.domain.events import DomainEvent
 from pricewatch.services.notifications import NotificationService, feishu_apprise_url
 
 
+def test_signed_robot_payload_uses_feishu_hmac(monkeypatch, environment):
+    import base64
+    import hashlib
+    import hmac
+
+    from pricewatch.services.notifications import FeishuSignedTransport
+
+    factory, _ = environment
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, *, json, timeout, follow_redirects):
+        captured.update(url=url, payload=json)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    monkeypatch.setattr("pricewatch.services.notifications.time.time", lambda: 1700000000)
+    webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    service = NotificationService(
+        factory, SecretStr(webhook), signing_secret=SecretStr("private-sign-key")
+    )
+    assert isinstance(service.transport, FeishuSignedTransport)
+    assert service.test_feishu().sent
+    assert captured["url"] == webhook
+    payload = captured["payload"]
+    assert payload["timestamp"] == "1700000000"
+    expected = base64.b64encode(
+        hmac.new(b"1700000000\nprivate-sign-key", b"", hashlib.sha256).digest()
+    ).decode()
+    assert payload["sign"] == expected
+    assert payload["msg_type"] == "text"
+    assert "飞书通知已连接" in payload["content"]["text"]
+
+
 class FakeTransport:
     def __init__(self, outcomes=(True,)):
         self.calls = 0

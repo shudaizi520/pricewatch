@@ -131,6 +131,118 @@ async def test_changed_option_rejects_price_that_never_moves():
 
 
 @pytest.mark.anyio
+async def test_confirmed_same_price_keyboard_is_valid():
+    soup = BeautifulSoup(FIXTURE.read_text(), "lxml")
+    group = soup.select_one('[aria-label="Graphics Card"]')
+    group["aria-label"] = "Keyboard"
+    wrappers = group.select(".option-grid-wrapper")
+    wrappers[0].select_one('[data-test-id="option-title"]').string = "Standard keyboard"
+    wrappers[1].select_one('[data-test-id="option-title"]').string = "CherryMX keyboard"
+    wrappers[0].select_one(".price.scoprice").string = ""
+    wrappers[1].select_one(".price.scoprice").string = "Selected"
+
+    class Page:
+        async def content(self):
+            return str(soup)
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+    offer = await settled_offer(
+        Page(),
+        {"Keyboard": "CherryMX keyboard"},
+        399999,
+        changed=True,
+        quote_confirmed=True,
+    )
+    assert offer.price_minor == 399999
+
+
+@pytest.mark.anyio
+async def test_keyboard_switch_waits_for_dell_quote_response(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    class Response:
+        url = "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"
+        status = 200
+
+        async def finished(self):
+            return None
+
+    class QuoteContext:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        @property
+        async def value(self):
+            return Response()
+
+    class Locator:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        def nth(self, _index):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return "CherryMX"
+
+        async def click(self):
+            self.page.selected = "CherryMX"
+
+        async def is_visible(self):
+            return False
+
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+    class Page:
+        selected = "Standard"
+
+        async def content(self):
+            return json.dumps({"Keyboard": self.selected})
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Locator(self)
+
+        def expect_response(self, predicate, timeout):
+            assert predicate(Response())
+            return QuoteContext()
+
+    monkeypatch.setattr(
+        dell_options, "read_catalog", lambda _page: _async_value({"Keyboard": ["CherryMX"]})
+    )
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    result = await apply_selection(Page(), {"Keyboard": "CherryMX"})
+    assert result.price_minor == 399999
+
+
+async def _async_value(value):
+    return value
+
+
+@pytest.mark.anyio
 async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
     from pricewatch.fetching import dell_options
 

@@ -1,11 +1,16 @@
 """Deduplicated Feishu delivery through Apprise."""
 
+import base64
+import hashlib
+import hmac
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+import httpx
 from apprise import Apprise
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -51,6 +56,40 @@ class AppriseTransport:
         if not notifier.add(destination):
             return False
         return bool(notifier.notify(title=title, body=body))
+
+
+class FeishuSignedTransport:
+    """Use the official robot signing fields when signature verification is enabled."""
+
+    def __init__(self, webhook: str, secret: SecretStr) -> None:
+        token_url = feishu_apprise_url(webhook)
+        token = token_url.removeprefix("feishu://")
+        self.webhook = (
+            webhook
+            if webhook.startswith("https://")
+            else f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
+        )
+        self.secret = secret
+
+    def send(self, destination: str, title: str, body: str) -> bool:
+        timestamp = str(int(time.time()))
+        key = f"{timestamp}\n{self.secret.get_secret_value()}".encode()
+        signature = base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode()
+        try:
+            response = httpx.post(
+                self.webhook,
+                json={
+                    "timestamp": timestamp,
+                    "sign": signature,
+                    "msg_type": "text",
+                    "content": {"text": f"{title}\n{body}"},
+                },
+                timeout=10,
+                follow_redirects=False,
+            )
+            return response.status_code == 200 and response.json().get("code") == 0
+        except (httpx.HTTPError, ValueError, TypeError):
+            return False
 
 
 @dataclass(frozen=True)
@@ -118,10 +157,15 @@ class NotificationService:
         factory: sessionmaker[Session],
         webhook: SecretStr,
         transport: NotificationTransport | None = None,
+        signing_secret: SecretStr | None = None,
     ) -> None:
         self.factory = factory
         self.destination = feishu_apprise_url(webhook.get_secret_value())
-        self.transport = transport or AppriseTransport()
+        self.transport = transport or (
+            FeishuSignedTransport(webhook.get_secret_value(), signing_secret)
+            if signing_secret is not None
+            else AppriseTransport()
+        )
 
     def test_feishu(self, webhook: SecretStr | None = None) -> DeliveryResult:
         target = feishu_apprise_url(webhook.get_secret_value()) if webhook else self.destination

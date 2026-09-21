@@ -11,10 +11,10 @@ from pricewatch.services.scheduler import SchedulerService, next_due
 
 def test_default_beijing_slots_and_jitter():
     now = datetime(2026, 9, 21, 1, 0, tzinfo=UTC)  # 09:00 Beijing
-    assert SchedulerService.default_local_hours == (4, 10, 16, 22)
+    assert SchedulerService.default_local_hours == (0, 6, 12, 18)
     due = next_due(now, 6, 3)
     assert due.date() == now.date()
-    assert due.hour == 2
+    assert due.hour == 4
     assert 0 <= due.second <= 89
     assert next_due(due, 6, 3) > due
 
@@ -79,6 +79,32 @@ async def test_restart_discards_stale_due_time(settings):
             refreshed = session.get(Product, identifier)
             assert refreshed is not None
             assert refreshed.next_check_at.replace(tzinfo=UTC) > datetime.now(UTC)
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_restart_realigns_old_future_slot_to_midnight(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        item = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/x",
+            next_check_at=datetime(2026, 12, 31, 20, 0, tzinfo=UTC),
+        )
+        session.add(item)
+        session.flush()
+        identifier = item.id
+    scheduler = SchedulerService(factory, None)
+    scheduler.start()
+    try:
+        with factory() as session:
+            refreshed = session.get(Product, identifier)
+            assert refreshed is not None
+            expected = next_due(datetime.now(UTC), 6, identifier)
+            assert refreshed.next_check_at.replace(tzinfo=UTC) == expected
     finally:
         await scheduler.stop()
         engine.dispose()

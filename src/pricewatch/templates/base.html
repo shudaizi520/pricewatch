@@ -20,6 +20,7 @@
         <a href="/status">状态</a>
       </nav>
       <div class="header-actions">
+        <form method="post" action="/refresh-all"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="refresh-button" type="submit" aria-label="刷新全部价格" title="刷新全部价格">↻</button></form>
         <form method="post" action="/theme" class="theme-picker" aria-label="外观">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" name="theme" value="light" aria-label="浅色" title="浅色">☀</button>

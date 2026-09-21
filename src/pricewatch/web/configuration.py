@@ -46,18 +46,18 @@ def configuration_rows(
         for key, label in LABELS.items()
         if isinstance(record.get(key), str) and str(record[key]).strip()
     ]
+    extras = record.get("extras")
+    if include_extras and isinstance(extras, dict):
+        known = {value for _, value in rows}
+        for key, value in extras.items():
+            if (
+                isinstance(key, str)
+                and isinstance(value, str)
+                and value.strip()
+                and value not in known
+            ):
+                rows.append((EXTRA_LABELS.get(key, key), value.strip()))
     if rows:
-        extras = record.get("extras")
-        if include_extras and isinstance(extras, dict):
-            known = {value for _, value in rows}
-            for key, value in extras.items():
-                if (
-                    isinstance(key, str)
-                    and isinstance(value, str)
-                    and value.strip()
-                    and value not in known
-                ):
-                    rows.append((EXTRA_LABELS.get(key, key), value.strip()))
         return rows
     summary = record.get("summary")
     if not isinstance(summary, str):

@@ -4,7 +4,7 @@ import re
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from playwright.async_api import Page
+from playwright.async_api import Locator, Page
 
 from pricewatch.fetching.types import ConfiguredOffer
 
@@ -85,7 +85,11 @@ async def read_catalog(page: Page) -> dict[str, list[str]]:
 
 
 async def settled_offer(
-    page: Page, recipe: dict[str, str], baseline_price: int | None, changed: bool
+    page: Page,
+    recipe: dict[str, str],
+    baseline_price: int | None,
+    changed: bool,
+    quote_confirmed: bool = False,
 ) -> ConfiguredOffer:
     last_price: int | None = None
     stable_reads = 0
@@ -98,7 +102,7 @@ async def settled_offer(
         except ValueError:
             price = None
         # Dell can mark the new option selected before its asynchronous quote arrives.
-        if changed and price == baseline_price:
+        if changed and not quote_confirmed and price == baseline_price:
             price = None
         stable_reads = stable_reads + 1 if price is not None and price == last_price else 1
         if price is not None and stable_reads >= 3:
@@ -132,21 +136,51 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
                 matching.append(wrapper)
         if len(matching) != 1:
             raise ValueError(f"戴尔配置定位失败: {group} / {label}")
-        await matching[0].locator('[role="button"]').click()
         accept = (
             page.get_by_role("dialog")
             .filter(has_text="Spec changes required")
             .get_by_role("button", name="Accept", exact=True)
         )
-        for _ in range(40):
-            if await accept.is_visible():
-                await accept.click()
-            if selected_from_html(await page.content()).get(group) == label:
-                break
-            await page.wait_for_timeout(500)
+
+        async def choose_option(
+            matched: Locator = matching[0],
+            dialog: Locator = accept,
+            option_group: str = group,
+            option_label: str = label,
+        ) -> None:
+            await matched.locator('[role="button"]').click()
+            for _ in range(40):
+                if await dialog.is_visible():
+                    await dialog.click()
+                if selected_from_html(await page.content()).get(option_group) == option_label:
+                    return
+                await page.wait_for_timeout(500)
+            raise ValueError(f"戴尔没有完成配置切换: {option_group} / {option_label}")
+
+        quote_confirmed = False
+        if group == "Keyboard":
+            async with page.expect_response(
+                lambda response: (
+                    "/shopapi/unifiedpd/configure/" in response.url and response.status == 200
+                ),
+                timeout=20000,
+            ) as response_info:
+                await choose_option()
+            quote_response = await response_info.value
+            await quote_response.finished()
+            quote_confirmed = True
         else:
-            raise ValueError(f"戴尔没有完成配置切换: {group} / {label}")
-        last_offer = await settled_offer(page, {group: label}, baseline_price, changed=True)
+            await choose_option()
+        if quote_confirmed:
+            last_offer = await settled_offer(
+                page,
+                {group: label},
+                baseline_price,
+                changed=True,
+                quote_confirmed=True,
+            )
+        else:
+            last_offer = await settled_offer(page, {group: label}, baseline_price, changed=True)
     if last_offer is None:
         return await settled_offer(page, recipe, baseline_price=None, changed=False)
     if any(last_offer.selected.get(group) != label for group, label in recipe.items()):

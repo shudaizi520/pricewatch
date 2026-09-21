@@ -21,12 +21,12 @@ def next_due(after: datetime, hours: int, product_id: int) -> datetime:
     if hours not in (1, 3, 6, 12, 24):
         raise ValueError("Invalid check interval")
     local = after.astimezone(_BEIJING)
-    # The 10:00 slot is the common anchor for every approved interval.
+    # Local midnight is the common anchor for every approved interval.
     for offset in range(0, 48):
         candidate = local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
             hours=offset
         )
-        if (candidate.hour - 10) % hours != 0:
+        if candidate.hour % hours != 0:
             continue
         due = (candidate + timedelta(seconds=product_id % 90)).astimezone(UTC)
         if due > after:
@@ -45,7 +45,7 @@ class JobReference:
 
 
 class SchedulerService:
-    default_local_hours = (4, 10, 16, 22)
+    default_local_hours = (0, 6, 12, 18)
 
     def __init__(self, factory: sessionmaker[Session], checker: Checker | None) -> None:
         self.factory = factory
@@ -61,11 +61,7 @@ class SchedulerService:
         now = datetime.now(UTC)
         with self.factory.begin() as session:
             for product in session.scalars(select(Product).where(Product.status == "active")):
-                if (
-                    product.next_check_at is None
-                    or product.next_check_at.replace(tzinfo=UTC) <= now
-                ):
-                    product.next_check_at = next_due(now, product.check_interval_hours, product.id)
+                product.next_check_at = next_due(now, product.check_interval_hours, product.id)
         self.worker = asyncio.create_task(self._run())
         self.scheduler.add_job(self.run_due, "interval", seconds=30, id="due", max_instances=1)
         self.scheduler.start()

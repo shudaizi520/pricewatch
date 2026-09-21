@@ -25,18 +25,26 @@ async def test_save_feishu_encrypted_and_status_redacts_secret(client):
     page = await client.get("/settings")
     webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
     result = await client.post(
-        "/settings", data={"feishu_webhook": webhook, "csrf_token": token(page.text)}
+        "/settings",
+        data={
+            "feishu_webhook": webhook,
+            "feishu_signing_secret": "private-sign-key",
+            "csrf_token": token(page.text),
+        },
     )
     assert result.status_code == 303
     with app.state.session_factory() as session:
         stored = session.scalar(select(Setting).where(Setting.key == "feishu_webhook"))
         assert webhook not in stored.value_text
-    created = await client.post(
-        "/backups/create", data={"csrf_token": token(page.text)}
-    )
+        signing = session.get(Setting, "feishu_signing_secret")
+        assert signing is not None
+        assert "private-sign-key" not in signing.value_text
+    created = await client.post("/backups/create", data={"csrf_token": token(page.text)})
     assert created.status_code == 200
     downloaded = await client.get(created.json()["download_url"])
     assert downloaded.status_code == 200
     assert webhook.encode() not in downloaded.content
+    assert b"private-sign-key" not in downloaded.content
     assert webhook not in (await client.get("/settings")).text
     assert webhook not in (await client.get("/status")).text
+    assert "private-sign-key" not in (await client.get("/settings")).text

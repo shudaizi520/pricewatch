@@ -14,9 +14,11 @@ from pricewatch.services.crypto import SecretBox
 from pricewatch.services.notifications import NotificationService, feishu_apprise_url
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
 from pricewatch.web.forms import FormError, validate_password
+from pricewatch.web.timezone import beijing_label
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parents[1] / "templates")
+templates.env.filters["beijing"] = beijing_label
 
 
 @router.get("/settings")
@@ -24,6 +26,7 @@ async def settings_page(request: Request) -> Response:
     admin = require_admin(request)
     with request.app.state.session_factory() as session:
         configured = session.get(Setting, "feishu_webhook") is not None
+        signing_configured = session.get(Setting, "feishu_signing_secret") is not None
         backups = session.scalars(
             select(BackupRecord).order_by(BackupRecord.created_at.desc()).limit(10)
         ).all()
@@ -34,6 +37,7 @@ async def settings_page(request: Request) -> Response:
             "admin": admin,
             "csrf_token": csrf_token(request),
             "configured": configured,
+            "signing_configured": signing_configured,
             "backups": backups,
             "message": None,
         },
@@ -44,25 +48,47 @@ async def settings_page(request: Request) -> Response:
 async def save_settings(
     request: Request,
     feishu_webhook: str = Form(),
+    feishu_signing_secret: str = Form(""),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     require_admin(request)
-    if not feishu_webhook.strip():
-        return RedirectResponse("/settings", status_code=303)
+    box = SecretBox(request.app.state.settings.app_secret_key.get_secret_value())
+    with request.app.state.session_factory() as session:
+        saved_webhook = session.get(Setting, "feishu_webhook")
+        saved_signing = session.get(Setting, "feishu_signing_secret")
+        webhook = feishu_webhook.strip() or (
+            box.decrypt(saved_webhook.value_text)
+            if saved_webhook is not None and saved_webhook.value_text
+            else ""
+        )
+        signing = feishu_signing_secret.strip() or (
+            box.decrypt(saved_signing.value_text)
+            if saved_signing is not None and saved_signing.value_text
+            else ""
+        )
+    if not webhook:
+        raise HTTPException(422, "请先填写飞书 Webhook")
     try:
-        feishu_apprise_url(feishu_webhook.strip())
+        feishu_apprise_url(webhook)
     except ValueError as error:
         raise HTTPException(422, "飞书 Webhook 格式不正确") from error
-    box = SecretBox(request.app.state.settings.app_secret_key.get_secret_value())
     with request.app.state.session_factory.begin() as session:
         row = session.get(Setting, "feishu_webhook")
         if row is None:
             row = Setting(key="feishu_webhook")
             session.add(row)
-        row.value_text = box.encrypt(feishu_webhook.strip())
+        row.value_text = box.encrypt(webhook)
+        if signing:
+            signed = session.get(Setting, "feishu_signing_secret")
+            if signed is None:
+                signed = Setting(key="feishu_signing_secret")
+                session.add(signed)
+            signed.value_text = box.encrypt(signing)
     request.app.state.check_service.notifier = NotificationService(
-        request.app.state.session_factory, SecretStr(feishu_webhook.strip())
+        request.app.state.session_factory,
+        SecretStr(webhook),
+        signing_secret=SecretStr(signing) if signing else None,
     )
     return RedirectResponse("/settings", status_code=303)
 

@@ -45,10 +45,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     with session_factory() as session:
         saved_webhook = session.get(Setting, "feishu_webhook")
         if saved_webhook is not None and saved_webhook.value_text:
-            secret = SecretBox(resolved.app_secret_key.get_secret_value()).decrypt(
-                saved_webhook.value_text
+            box = SecretBox(resolved.app_secret_key.get_secret_value())
+            secret = box.decrypt(saved_webhook.value_text)
+            saved_signing = session.get(Setting, "feishu_signing_secret")
+            signing = (
+                SecretStr(box.decrypt(saved_signing.value_text))
+                if saved_signing is not None and saved_signing.value_text
+                else None
             )
-            checker.notifier = NotificationService(session_factory, SecretStr(secret))
+            checker.notifier = NotificationService(
+                session_factory, SecretStr(secret), signing_secret=signing
+            )
 
     async def maintain() -> None:
         backups.create("daily")

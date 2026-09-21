@@ -59,6 +59,57 @@ async def test_status_shows_safe_http_failure_detail_after_check(admin_client):
     response = await admin_client.get("/status")
     assert response.status_code == 200
     assert "HTTP 403" in response.text
+    assert "北京时间" in response.text
+    assert "UTC" not in response.text
+
+
+@pytest.mark.anyio
+async def test_status_shows_beijing_time_for_utc_check(admin_client):
+    from pricewatch.db.models import CheckRun
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(product)
+        session.flush()
+        session.add(
+            CheckRun(
+                product_id=product.id,
+                trigger="scheduled",
+                outcome="ok",
+                created_at=datetime(2026, 9, 21, 14, 9, tzinfo=UTC),
+            )
+        )
+    response = await admin_client.get("/status")
+    assert "2026-09-21 22:09" in response.text
+    assert "北京时间" in response.text
+
+
+@pytest.mark.anyio
+async def test_refresh_all_queues_active_products_only(admin_client, monkeypatch):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        for status in ("active", "active", "paused", "archived"):
+            session.add(
+                Product(
+                    source_site="dell-us", requested_url="https://www.dell.com/x", status=status
+                )
+            )
+    queued = []
+    monkeypatch.setattr(
+        app.state.scheduler,
+        "request_check",
+        lambda product_id, trigger: queued.append((product_id, trigger)),
+    )
+    page = await admin_client.get("/")
+    assert 'aria-label="刷新全部价格"' in page.text
+    denied = await admin_client.post("/refresh-all", data={"csrf_token": "invalid"})
+    assert denied.status_code == 403
+    response = await admin_client.post("/refresh-all", data={"csrf_token": csrf(page.text)})
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/status?")
+    assert len(queued) == 2
+    assert all(trigger == "manual" for _, trigger in queued)
 
 
 @pytest.mark.anyio
@@ -185,6 +236,74 @@ async def test_same_url_can_create_distinct_selected_configurations(admin_client
         assert len(cards) == 2
         assert "5070" in cards[0].dell_selection["Graphics Card"]
         assert "5090" in cards[1].dell_selection["Graphics Card"]
+
+
+@pytest.mark.anyio
+async def test_keyboard_options_are_visible_and_saved_with_card(admin_client, monkeypatch):
+    from pricewatch.fetching.safety import validate_public_url
+    from pricewatch.fetching.types import AcquiredPage
+    from pricewatch.web import routes_products
+
+    address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
+    keyboard = "English US CherryMX ultra low-profile mechanical keyboard"
+    monkeypatch.setattr(
+        routes_products,
+        "validate_public_url",
+        lambda url: validate_public_url(url, lambda _host: ["8.8.8.8"]),
+    )
+    monkeypatch.setattr(
+        routes_products,
+        "catalog_from_html",
+        lambda _html: {"Keyboard": [keyboard, "English US keyboard"]},
+    )
+
+    class Browser:
+        async def fetch(self, _url):
+            return AcquiredPage(
+                address, address, 200, b"<html></html>", {}, "browser", datetime.now(UTC)
+            )
+
+    class Pipeline:
+        browser = Browser()
+
+        async def acquire(self, url, _adapter, dell_selection=None):
+            assert dell_selection == {"Keyboard": keyboard}
+            return None, ProductSnapshot(
+                ProductIdentity("dell-us", "aa18250_reg_01"),
+                str(url),
+                "Alienware 18 Area-51",
+                ProductConfiguration(extras={"Keyboard": keyboard}),
+                Money("USD", 399999),
+            )
+
+    app = admin_client._transport.app
+    app.state.check_service.pipeline = Pipeline()
+    page = await admin_client.get("/products/new")
+    options = await admin_client.post(
+        "/products/options", data={"url": address, "csrf_token": csrf(page.text)}
+    )
+    assert 'name="option__Keyboard"' in options.text
+    catalog_token = re.search(r'name="catalog_token" value="([^"]+)"', options.text).group(1)
+    preview = await admin_client.post(
+        "/products/preview",
+        data={
+            "url": address,
+            "catalog_token": catalog_token,
+            "option__Keyboard": keyboard,
+            "csrf_token": csrf(options.text),
+        },
+    )
+    assert "键盘" in preview.text
+    assert keyboard in preview.text
+    preview_token = re.search(r'name="preview_token" value="([^"]+)"', preview.text).group(1)
+    await admin_client.post(
+        "/products/confirm", data={"preview_token": preview_token, "csrf_token": csrf(preview.text)}
+    )
+    with app.state.session_factory() as session:
+        card = session.scalar(select(Product).where(Product.source_site == "dell-us"))
+        assert card.dell_selection == {"Keyboard": keyboard}
+    dashboard = await admin_client.get("/")
+    assert keyboard in dashboard.text
 
 
 @pytest.mark.anyio
