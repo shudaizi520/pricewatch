@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -6,11 +7,13 @@ from bs4 import BeautifulSoup
 
 from pricewatch.fetching.dell_options import (
     active_price_minor,
+    apply_selection,
     catalog_from_html,
     configured_price_minor,
     selected_from_html,
     settled_offer,
 )
+from pricewatch.fetching.types import ConfiguredOffer
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dell" / "options.html"
 
@@ -125,3 +128,76 @@ async def test_changed_option_rejects_price_that_never_moves():
             baseline_price=399999,
             changed=True,
         )
+
+
+@pytest.mark.anyio
+async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    labels = {"Graphics Card": "RTX 5090", "Power Supply": "360W"}
+    settled = []
+
+    class Locator:
+        def __init__(self, page, group, label):
+            self.page, self.group, self.label = page, group, label
+
+        def locator(self, _selector):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return self.label
+
+        async def click(self):
+            self.page.selected[self.group] = self.label
+
+    class Wrappers:
+        def __init__(self, page, group):
+            self.page, self.group = page, group
+
+        def locator(self, _selector):
+            return self
+
+        async def count(self):
+            return 1
+
+        def nth(self, _index):
+            return Locator(self.page, self.group, labels[self.group])
+
+    class Accept:
+        async def wait_for(self, **_kwargs):
+            raise TimeoutError()
+
+    class Page:
+        def __init__(self):
+            self.selected = {"Graphics Card": "RTX 5070", "Power Supply": "280W"}
+            self.price = 399999
+
+        async def content(self):
+            return json.dumps(self.selected)
+
+        async def evaluate(self, _script):
+            return f"Dell Price ${self.price / 100:,.2f}"
+
+        def get_by_role(self, role, name, exact=True):
+            return Wrappers(self, name) if role == "group" else Accept()
+
+    async def catalog(_page):
+        return {group: [label] for group, label in labels.items()}
+
+    async def quote(page, recipe, baseline_price, changed):
+        settled.append((dict(recipe), baseline_price, changed))
+        page.price = 509999 if len(settled) == 1 else 519999
+        return ConfiguredOffer(dict(page.selected), page.price)
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    monkeypatch.setattr(dell_options, "settled_offer", quote)
+    result = await apply_selection(Page(), labels)
+    assert result.price_minor == 519999
+    assert settled == [
+        ({"Graphics Card": "RTX 5090"}, 399999, True),
+        ({"Power Supply": "360W"}, 509999, True),
+    ]
