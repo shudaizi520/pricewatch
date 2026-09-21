@@ -2,8 +2,9 @@
 
 from httpx import URL
 
-from pricewatch.adapters.base import ExtractionError, ProductAdapter
+from pricewatch.adapters.base import ProductAdapter
 from pricewatch.adapters.dell_us import DellUsAdapter
+from pricewatch.adapters.generic import GenericAdapter
 
 
 class AdapterRegistry:
@@ -13,4 +14,4 @@ class AdapterRegistry:
     def for_url(self, url: URL) -> ProductAdapter:
         if self.dell.supports(url):
             return self.dell
-        raise ExtractionError("No adapter available for this site")
+        return GenericAdapter()
