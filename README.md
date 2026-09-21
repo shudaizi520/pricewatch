@@ -50,4 +50,6 @@ Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR �
 
 项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR 镜像尚未发布；先让 CI 在 Python 3.12 和 Docker 构建上通过，并完成 TrueNAS 实机验收。稳定版发布工作流需要配置受保护的 `production` environment、仓库变量 `RELEASE_SIGNING_PUBLIC_KEY`、签名的 `v1.0.0` 类 tag；人工触发工作流后发布 `linux/amd64` 的 `1.0.0`、`1.0`、`1` 和 `latest`。不要将 `.env` 或真实 Webhook 推上去。
 
+CI 会完整报告镜像的高危/严重漏洞，并阻止任何已有修复版本却尚未升级的漏洞。2026-09-21 的试构建仍有 56 项 Debian 系统包告警（其中 1 项严重），扫描器尚未列出修复版本。这不是“零漏洞”；待上游发布修复后应及时重建和升级镜像。实机验收期间只应经受信任的局域网或反代访问，不应直接把 8080 暴露到公网。
+
 依赖/许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

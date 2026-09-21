@@ -42,9 +42,17 @@ jobs:
       - name: Remove smoke container
         if: always()
         run: docker rm -f pricewatch-ci || true
-      - name: Container vulnerability scan
+      - name: Report all high and critical container vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pricewatch:ci
           severity: CRITICAL,HIGH
+          # Keep unfixed OS findings visible in every CI log.
+          exit-code: '0'
+      - name: Block high and critical vulnerabilities with available fixes
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: pricewatch:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
           exit-code: '1'
