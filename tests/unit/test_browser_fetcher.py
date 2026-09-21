@@ -140,6 +140,63 @@ async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    "desktop_url",
+    [
+        "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example",
+        "https://www.dell.com/zh-cn/shop/dell-laptops/spd/alienware18area51aa18250/aa18250_cn_01",
+    ],
+)
+async def test_other_dell_product_does_not_require_area_51_option_grid(
+    monkeypatch, desktop_url
+):
+
+    class FakePage:
+        url = desktop_url
+
+        async def route(self, *_):
+            pass
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            raise AssertionError("Area-51 readiness rule must not apply to a desktop")
+
+        async def content(self):
+            return "<html><h1>Alienware Aurora Desktop</h1></html>"
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    page = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(URL(desktop_url))
+    assert b"Alienware Aurora Desktop" in page.body
+
+
+@pytest.mark.anyio
 async def test_pipeline_keeps_both_denials_instead_of_hiding_http_403():
     class FailingFetcher:
         def __init__(self, message, status_code):

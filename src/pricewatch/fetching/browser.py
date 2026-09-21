@@ -102,6 +102,8 @@ class BrowserFetcher:
                         )
                     if host in {"www.dell.com", "dell.com"} and url.path.startswith(
                         "/en-us/shop/"
+                    ) and (
+                        "/alienware18area51aa18250/" in url.path
                     ):
                         try:
                             await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)
