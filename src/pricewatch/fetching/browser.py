@@ -10,6 +10,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError, ProductAdapter
 from pricewatch.domain.products import ProductSnapshot
+from pricewatch.fetching.dell_options import apply_selection
 from pricewatch.fetching.http import AcquisitionError, HttpFetcher
 from pricewatch.fetching.safety import Resolver, UnsafeUrlError, public_addresses, system_resolver
 from pricewatch.fetching.socks_proxy import SafeSocksProxy
@@ -70,11 +71,18 @@ class BrowserFetcher:
             await route.abort()
 
     async def fetch(
-        self, url: URL, browser_factory: Callable[[], object] | None = None
+        self,
+        url: URL,
+        browser_factory: Callable[[], object] | None = None,
+        dell_selection: dict[str, str] | None = None,
     ) -> AcquiredPage:
         host = url.host
         if not host:
             raise AcquisitionError("Browser target has no hostname")
+        if dell_selection is not None and not (
+            host in {"www.dell.com", "dell.com"} and url.path.startswith("/en-us/shop/")
+        ):
+            raise AcquisitionError("配置选择仅支持美国戴尔商品页")
         address = public_addresses(url, self.resolver)[0]
         if browser_factory is not None:
             try:
@@ -118,19 +126,34 @@ class BrowserFetcher:
                             f"浏览器访问商品页面返回 HTTP {response.status}",
                             status_code=response.status,
                         )
-                    if host in {"www.dell.com", "dell.com"} and url.path.startswith(
-                        "/en-us/shop/"
-                    ) and "alienware18area51aa18250" in url.path:
+                    if (
+                        host in {"www.dell.com", "dell.com"}
+                        and url.path.startswith("/en-us/shop/")
+                        and "alienware18area51aa18250" in url.path
+                    ):
                         try:
                             await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)
                         except PlaywrightTimeoutError as error:
                             raise AcquisitionError("戴尔商品配置或价格尚未完整加载") from error
+                    configured_offer = None
+                    if dell_selection is not None:
+                        try:
+                            configured_offer = await apply_selection(page, dell_selection)
+                        except ValueError as error:
+                            raise AcquisitionError(str(error)) from error
                     html = await page.content()
                     body = html.encode("utf-8")
                     if len(body) > self.max_body_bytes:
                         raise AcquisitionError("Browser page exceeds response limit")
                     return AcquiredPage(
-                        str(url), page.url, response.status, body, {}, "browser", datetime.now(UTC)
+                        str(url),
+                        page.url,
+                        response.status,
+                        body,
+                        {},
+                        "browser",
+                        datetime.now(UTC),
+                        configured_offer,
                     )
                 finally:
                     await browser.close()

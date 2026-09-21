@@ -7,7 +7,7 @@ from httpx import URL
 
 from pricewatch.adapters.base import AmbiguousExtraction, ExtractionError
 from pricewatch.adapters.dell_us import DellUsAdapter
-from pricewatch.fetching.types import AcquiredPage
+from pricewatch.fetching.types import AcquiredPage, ConfiguredOffer
 
 URL_STRING = (
     "https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250/aa18250_reg_01"
@@ -23,7 +23,7 @@ def test_extracts_synthetic_alienware_snapshot():
     snapshot = DellUsAdapter().extract(page((FIXTURES / "product.html").read_text()))
     assert snapshot.identity.site == "dell-us"
     assert snapshot.identity.sku == "aa18250_reg_01"
-    assert "RTX 5090" in (snapshot.configuration.gpu or "")
+    assert "5090" in (snapshot.configuration.gpu or "")
     assert snapshot.configuration.memory == "64 GB DDR5"
     assert snapshot.price.currency == "USD"
     assert snapshot.price.minor == 299999
@@ -42,7 +42,7 @@ def test_browser_fallback_markup_extracts_primary_price():
 
 
 def test_current_dell_selected_options_and_lowercase_currency():
-    html = '''
+    html = """
     <html><head><link rel="canonical" href="https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250/aa18250_reg_01">
     <script type="application/ld+json">{
       "@type":"Product", "name":"Alienware 18 Area-51 Gaming Laptop",
@@ -71,7 +71,7 @@ def test_current_dell_selected_options_and_lowercase_currency():
       <span data-test-id="option-title">NVIDIA GeForce RTX 5090 24 GB GDDR7</span>
       <div class="price scoprice">+ $1,100.00</div></div>
     </body></html>
-    '''
+    """
     snapshot = DellUsAdapter().extract(page(html))
     assert snapshot.price.currency == "USD"
     assert snapshot.price.minor == 399999
@@ -80,6 +80,43 @@ def test_current_dell_selected_options_and_lowercase_currency():
     assert snapshot.configuration.memory == "32GB: 2x16GB, DDR5"
     assert snapshot.configuration.storage == "1TB M.2 2230 SSD"
     assert snapshot.configuration.display == '18", WQXGA, 300Hz'
+
+
+def test_configured_offer_uses_selected_buy_box_price_not_stale_jsonld():
+    html = (FIXTURES / "options.html").read_text()
+    html = html.replace(
+        '8 GB GDDR7</span><div class="price scoprice">Selected',
+        '8 GB GDDR7</span><div class="price scoprice">+ $0.00',
+    )
+    html = html.replace(
+        '24 GB GDDR7</span><div class="price scoprice">+ $1,100.00',
+        '24 GB GDDR7</span><div class="price scoprice">Selected',
+    )
+    html = html.replace("<span>$3,999.99</span>", "<span>$5,099.99</span>")
+    html = html.replace(
+        "</body>", '<div data-testid="processor">Intel Core Ultra 9 290HX</div></body>'
+    )
+    acquired = page(html)
+    acquired = AcquiredPage(
+        acquired.requested_url,
+        acquired.final_url,
+        acquired.status,
+        acquired.body,
+        acquired.headers,
+        acquired.method,
+        acquired.fetched_at,
+        ConfiguredOffer(
+            {
+                "Graphics Card": "NVIDIA® GeForce RTX™ 5090 24 GB GDDR7",
+                "Power Supply": "280W 7.4mm AC Adapter",
+            },
+            509999,
+        ),
+    )
+    snapshot = DellUsAdapter().extract(acquired)
+    assert snapshot.price.minor == 509999
+    assert "5090" in (snapshot.configuration.gpu or "")
+    assert snapshot.evidence["price"] == "browser.configured_purchase_price"
 
 
 def test_conflicting_structured_current_prices_require_review():

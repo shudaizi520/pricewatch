@@ -5,6 +5,12 @@ from datetime import datetime
 
 
 @dataclass(frozen=True, slots=True)
+class ConfiguredOffer:
+    selected: dict[str, str]
+    price_minor: int
+
+
+@dataclass(frozen=True, slots=True)
 class AcquiredPage:
     requested_url: str
     final_url: str
@@ -13,6 +19,7 @@ class AcquiredPage:
     headers: dict[str, str]
     method: str
     fetched_at: datetime
+    configured_offer: ConfiguredOffer | None = None
 
     @property
     def html(self) -> str:

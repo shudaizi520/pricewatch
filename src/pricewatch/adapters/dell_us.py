@@ -73,27 +73,46 @@ class DellUsAdapter:
         offers = structured.get("offers")
         offer = offers if isinstance(offers, dict) else {}
         candidates: dict[str, Money] = {}
-        currency = _text(offer.get("priceCurrency")).upper()
-        if offer.get("price") and currency:
-            candidates["jsonld.offers.price"] = Money.from_decimal(currency, _text(offer["price"]))
-        amount = soup.find("meta", attrs={"property": "product:price:amount"})
-        meta_currency = soup.find("meta", attrs={"property": "product:price:currency"})
-        if isinstance(amount, Tag) and isinstance(meta_currency, Tag):
-            candidates["meta.product.price.amount"] = Money.from_decimal(
-                _text(meta_currency.get("content")).upper(), _text(amount.get("content"))
-            )
-        visible_price = _visible(soup, "sale-price")
-        if visible_price:
-            digits = visible_price.replace("$", "").replace(",", "").strip()
-            candidates["visible.purchase_price"] = Money.from_decimal("USD", digits)
-        if not candidates:
-            raise ExtractionError("No trusted Dell public purchase price found")
-        if any(candidate.currency != "USD" for candidate in candidates.values()):
-            raise ExtractionError("Dell US offer did not use USD")
-        if len({candidate.minor for candidate in candidates.values()}) > 1:
-            raise AmbiguousExtraction("Conflicting Dell purchase prices")
-        source = next(source for source in PRICE_PRIORITY if source in candidates)
-        price = candidates[source]
+        if page.configured_offer is not None:
+            from pricewatch.fetching.dell_options import configured_price_minor, selected_from_html
+
+            try:
+                if selected_from_html(page.html) != page.configured_offer.selected:
+                    raise ExtractionError(
+                        "Configured Dell options no longer match browser evidence"
+                    )
+                if configured_price_minor(page.html) != page.configured_offer.price_minor:
+                    raise ExtractionError(
+                        "Configured Dell price no longer matches browser evidence"
+                    )
+            except ValueError as error:
+                raise ExtractionError("Configured Dell offer is not verifiable") from error
+            source = "browser.configured_purchase_price"
+            price = Money("USD", page.configured_offer.price_minor)
+        else:
+            currency = _text(offer.get("priceCurrency")).upper()
+            if offer.get("price") and currency:
+                candidates["jsonld.offers.price"] = Money.from_decimal(
+                    currency, _text(offer["price"])
+                )
+            amount = soup.find("meta", attrs={"property": "product:price:amount"})
+            meta_currency = soup.find("meta", attrs={"property": "product:price:currency"})
+            if isinstance(amount, Tag) and isinstance(meta_currency, Tag):
+                candidates["meta.product.price.amount"] = Money.from_decimal(
+                    _text(meta_currency.get("content")).upper(), _text(amount.get("content"))
+                )
+            visible_price = _visible(soup, "sale-price")
+            if visible_price:
+                digits = visible_price.replace("$", "").replace(",", "").strip()
+                candidates["visible.purchase_price"] = Money.from_decimal("USD", digits)
+            if not candidates:
+                raise ExtractionError("No trusted Dell public purchase price found")
+            if any(candidate.currency != "USD" for candidate in candidates.values()):
+                raise ExtractionError("Dell US offer did not use USD")
+            if len({candidate.minor for candidate in candidates.values()}) > 1:
+                raise AmbiguousExtraction("Conflicting Dell purchase prices")
+            source = next(source for source in PRICE_PRIORITY if source in candidates)
+            price = candidates[source]
 
         canonical_tag = soup.find("link", attrs={"rel": "canonical"})
         canonical = (
@@ -126,6 +145,10 @@ class DellUsAdapter:
             display=_selected_option(soup, r'\d{2}\s*(?:"|″|inch)')
             or _visible(soup, "display")
             or _find_description(description, r"\d+\s*(?:inch|\")\s*[A-Z0-9+]+\s*display"),
+            os=page.configured_offer.selected.get("Operating System")
+            if page.configured_offer
+            else None,
+            extras=page.configured_offer.selected if page.configured_offer else {},
         )
         if not configuration.gpu or not (
             configuration.cpu or configuration.memory or configuration.storage
