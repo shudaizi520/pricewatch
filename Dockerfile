@@ -30,7 +30,8 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels pricewa
 COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY docker/start.sh ./docker/start.sh
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 USER 10001:10001
 EXPOSE 8080
-CMD ["sh", "-c", "python -m pricewatch.bootstrap && exec xvfb-run -a uvicorn pricewatch.app:create_app --factory --host 0.0.0.0 --port 8080 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1"]
+CMD ["sh", "/app/docker/start.sh"]
