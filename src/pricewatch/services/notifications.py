@@ -99,19 +99,19 @@ class DeliveryResult:
     status: str
 
 
-def _message_configuration(record: dict[str, object] | None) -> str:
+def _message_configuration(record: dict[str, object] | None) -> list[str]:
     if not record:
-        return "配置待确认"
+        return ["配置待确认"]
     config = ProductConfiguration.from_record(record)
     parts = [
-        value
-        for value in (
-            config.cpu,
-            config.gpu,
-            config.memory,
-            config.storage,
-            config.display,
-            config.os,
+        f"{label}: {value}"
+        for label, value in (
+            ("处理器", config.cpu),
+            ("显卡", config.gpu),
+            ("内存", config.memory),
+            ("存储", config.storage),
+            ("屏幕", config.display),
+            ("系统", config.os),
         )
         if value
     ]
@@ -119,11 +119,11 @@ def _message_configuration(record: dict[str, object] | None) -> str:
     if keyboard:
         parts.append(f"键盘: {keyboard}")
     if parts:
-        return " · ".join(parts)
+        return parts
     if config.extras:
-        return "配置待确认"
+        return ["配置待确认"]
     summary = record.get("summary")
-    return summary if isinstance(summary, str) and summary.strip() else "配置待确认"
+    return [f"配置: {summary}"] if isinstance(summary, str) and summary.strip() else ["配置待确认"]
 
 
 def format_message(event: DomainEvent, product: Product) -> str:
@@ -139,7 +139,7 @@ def format_message(event: DomainEvent, product: Product) -> str:
         "check_failed": "连续检查失败",
         "check_recovered": "检查已恢复",
     }
-    lines = [f"{name} · {labels.get(event.kind, event.kind)}", str(config)]
+    lines = [f"{name} · {labels.get(event.kind, event.kind)}", "", *config, ""]
     previous = event.old.get("price_minor")
     current = event.new.get("price_minor")
     currency = event.new.get("currency") or "USD"
@@ -149,10 +149,11 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if isinstance(previous, int):
             delta = current - previous
             lines.append(
-                f"{price_prefix}{previous / 100:,.2f} → {price} ({delta / 100:+,.2f} {currency})"
+                f"价格: {price_prefix}{previous / 100:,.2f} → {price}"
+                f" ({delta / 100:+,.2f} {currency})"
             )
         else:
-            lines.append(price)
+            lines.append(f"价格: {price}")
         if (
             product.notify_mode == "target_or_change"
             and product.target_price_minor is not None
@@ -175,7 +176,9 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if old_description or new_description:
             lines.append(f"原配置: {old_description or '未知'}")
             lines.append(f"新配置: {new_description or '未知'}")
-    lines.extend([f"北京时间 {time}", product.canonical_url or product.requested_url])
+    lines.extend(
+        [f"北京时间: {time}", f"商品链接: {product.canonical_url or product.requested_url}"]
+    )
     return "\n".join(lines)
 
 

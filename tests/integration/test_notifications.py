@@ -156,6 +156,67 @@ def test_feishu_price_message_omits_folded_options_but_identifies_keyboard(envir
     assert "No Documentation" not in body
 
 
+def test_feishu_price_message_lists_price_relevant_configuration_one_per_line(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.configuration = {
+            "cpu": "Core Ultra 9",
+            "gpu": "RTX 5090",
+            "memory": "64GB DDR5",
+            "storage": "2TB SSD",
+            "display": '18" WQXGA',
+            "os": "Windows 11 Home",
+            "extras": {
+                "Keyboard": "CherryMX RGB",
+                "Wireless": "Wi-Fi 7",
+                "Documentation": "No Documentation",
+            },
+        }
+    with factory() as session:
+        body = format_message(price_event(product_id), session.get(Product, product_id))
+
+    lines = body.splitlines()
+    for line in (
+        "处理器: Core Ultra 9",
+        "显卡: RTX 5090",
+        "内存: 64GB DDR5",
+        "存储: 2TB SSD",
+        '屏幕: 18" WQXGA',
+        "系统: Windows 11 Home",
+        "键盘: CherryMX RGB",
+    ):
+        assert line in lines
+    assert any(line.startswith("价格: $3,000.00 → $2,900.00") for line in lines)
+    assert "北京时间: 2026-09-21 10:00" in lines
+    assert "商品链接: https://www.dell.com/x" in lines
+    assert "Wi-Fi 7" not in body
+    assert "No Documentation" not in body
+    assert " · Core Ultra 9" not in body
+
+
+def test_feishu_initial_price_has_a_separate_labeled_price_line(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    event = DomainEvent(
+        product_id,
+        "initial_observation",
+        datetime(2026, 9, 21, 2, tzinfo=UTC),
+        {},
+        {"price_minor": 674999},
+    )
+    with factory() as session:
+        body = format_message(event, session.get(Product, product_id))
+
+    lines = body.splitlines()
+    assert "配置: RTX 5090" in lines
+    assert "价格: $6,749.99" in lines
+    assert "北京时间: 2026-09-21 10:00" in lines
+
+
 def test_failed_delivery_retries_without_new_logical_event(environment):
     factory, product_id = environment
     transport = FakeTransport((False, True))
