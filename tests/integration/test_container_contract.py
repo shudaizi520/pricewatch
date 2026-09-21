@@ -23,11 +23,15 @@ def test_compose_single_service_persistent_data_and_healthcheck():
 
 def test_image_non_root_one_worker_and_graphical_chromium():
     dockerfile = (ROOT / "Dockerfile").read_text()
+    startup = (ROOT / "docker/start.sh").read_text()
     assert "USER 10001:10001" in dockerfile
     assert "playwright install chromium" in dockerfile
-    assert "xvfb-run" in dockerfile
-    assert "--workers 1" in dockerfile
-    assert "python -m pricewatch.bootstrap" in dockerfile
+    assert 'CMD ["sh", "/app/docker/start.sh"]' in dockerfile
+    assert "Xvfb :99" in startup
+    assert "export DISPLAY=:99" in startup
+    assert "exec uvicorn" in startup
+    assert "--workers 1" in startup
+    assert "python -m pricewatch.bootstrap" in startup
 
 
 def test_compose_requires_secret():
