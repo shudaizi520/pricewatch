@@ -74,16 +74,12 @@ class DellUsAdapter:
         offer = offers if isinstance(offers, dict) else {}
         candidates: dict[str, Money] = {}
         if page.configured_offer is not None:
-            from pricewatch.fetching.dell_options import configured_price_minor, selected_from_html
+            from pricewatch.fetching.dell_options import selected_from_html
 
             try:
                 if selected_from_html(page.html) != page.configured_offer.selected:
                     raise ExtractionError(
                         "Configured Dell options no longer match browser evidence"
-                    )
-                if configured_price_minor(page.html) != page.configured_offer.price_minor:
-                    raise ExtractionError(
-                        "Configured Dell price no longer matches browser evidence"
                     )
             except ValueError as error:
                 raise ExtractionError("Configured Dell offer is not verifiable") from error

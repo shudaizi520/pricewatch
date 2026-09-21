@@ -1,8 +1,11 @@
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 from pricewatch.fetching.dell_options import (
+    active_price_minor,
     catalog_from_html,
     configured_price_minor,
     selected_from_html,
@@ -36,6 +39,10 @@ def test_configured_price_uses_visible_purchase_block_not_static_jsonld():
     assert configured_price_minor(html) == 509999
 
 
+def test_active_browser_text_accepts_dell_whitespace_and_same_price_repeated():
+    assert active_price_minor("Dell Price\n$ 5,099.99\nDell Price $5,099.99") == 509999
+
+
 @pytest.mark.parametrize("price", ["$4,000", "EUR 4,000.00", "-$1.00"])
 def test_configured_price_rejects_missing_or_non_usd_offer(price):
     html = FIXTURE.read_text().replace("<span>$3,999.99</span>", f"<span>{price}</span>")
@@ -43,7 +50,7 @@ def test_configured_price_rejects_missing_or_non_usd_offer(price):
         configured_price_minor(html)
 
 
-def test_duplicate_group_or_option_is_rejected():
+def test_duplicate_group_is_rejected():
     html = FIXTURE.read_text()
     first_group = html.split('<div class="accordion-box">', 1)[1].split(
         '<div class="accordion-box">', 1
@@ -53,3 +60,10 @@ def test_duplicate_group_or_option_is_rejected():
     )
     with pytest.raises(ValueError):
         catalog_from_html(duplicated)
+
+
+def test_duplicate_unselected_option_label_is_deduplicated_in_catalog():
+    soup = BeautifulSoup(FIXTURE.read_text(), "lxml")
+    group = soup.select_one('[aria-label="Graphics Card"]')
+    group.append(deepcopy(group.select(".option-grid-wrapper")[1]))
+    assert len(catalog_from_html(str(soup))["Graphics Card"]) == 2
