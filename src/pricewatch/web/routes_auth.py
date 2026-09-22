@@ -40,7 +40,7 @@ async def initialize_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="initialize.html",
-        context={"csrf_token": csrf_token(request), "error": None},
+        context={"csrf_token": csrf_token(request), "error": None, "username": ""},
     )
 
 
@@ -49,12 +49,24 @@ async def initialize(
     request: Request,
     username: str = Form(),
     password: str = Form(),
+    confirm_password: str = Form(),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     factory = _factory(request)
     if _has_admin(factory):
         raise HTTPException(status_code=404)
+    if password != confirm_password:
+        return templates.TemplateResponse(
+            request=request,
+            name="initialize.html",
+            context={
+                "csrf_token": csrf_token(request),
+                "error": "两次密码不一致",
+                "username": username,
+            },
+            status_code=422,
+        )
     try:
         valid_username = validate_username(username)
         valid_password = validate_password(password)
@@ -62,7 +74,7 @@ async def initialize(
         return templates.TemplateResponse(
             request=request,
             name="initialize.html",
-            context={"csrf_token": csrf_token(request), "error": str(error)},
+            context={"csrf_token": csrf_token(request), "error": str(error), "username": username},
             status_code=422,
         )
     with factory() as session:

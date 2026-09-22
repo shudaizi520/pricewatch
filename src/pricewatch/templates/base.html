@@ -5,15 +5,18 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}PriceWatch{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
   <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/cards.css?v={{ request.app.state.cards_css_version }}">
+  <script src="/static/app.js?v={{ request.app.state.app_js_version }}" defer></script>
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/"><span class="mark" aria-hidden="true">⌁</span><span>PriceWatch</span></a>
+      <a class="brand" href="/"><img class="brand-icon" src="/static/mark.svg" alt=""><span>PriceWatch</span></a>
       <nav aria-label="主导航" class="nav">
         <a href="/" class="{% if request.url.path == '/' %}selected{% endif %}">监控</a>
+        <a href="/products/archived" class="{% if request.url.path == '/products/archived' %}selected{% endif %}">已归档</a>
         <a href="/settings">通知与设置</a>
         <a href="/status">状态</a>
       </nav>

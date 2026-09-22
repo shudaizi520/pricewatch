@@ -1,15 +1,16 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>初始化 PriceWatch</title><link rel="stylesheet" href="/static/app.css"></head>
+  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>初始化 PriceWatch</title><link rel="icon" type="image/svg+xml" href="/static/mark.svg"><link rel="stylesheet" href="/static/app.css"></head>
   <body class="auth-body">
     <main class="panel auth-panel">
-      <div class="auth-brand"><span class="mark" aria-hidden="true">⌁</span> PriceWatch</div>
+      <div class="auth-brand"><img class="brand-icon" src="/static/mark.svg" alt=""> PriceWatch</div>
       <h1>创建管理员</h1><p class="muted">只需这一次，之后直接登录。</p>
       {% if error %}<p role="alert">{{ error }}</p>{% endif %}
       <form method="post" action="/initialize">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label>账号 <input name="username" autocomplete="username" required></label>
+        <label>账号 <input name="username" value="{{ username }}" autocomplete="username" required></label>
         <label>密码 <input name="password" type="password" autocomplete="new-password" required></label>
+        <label>确认密码 <input name="confirm_password" type="password" autocomplete="new-password" required></label>
         <button class="button primary" type="submit">创建并进入</button>
       </form>
     </main>

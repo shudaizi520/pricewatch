@@ -11,6 +11,45 @@ from pricewatch.domain.events import DomainEvent
 from pricewatch.services.notifications import NotificationService, feishu_apprise_url
 
 
+def test_signed_robot_payload_uses_feishu_hmac(monkeypatch, environment):
+    import base64
+    import hashlib
+    import hmac
+
+    from pricewatch.services.notifications import FeishuSignedTransport
+
+    factory, _ = environment
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, *, json, timeout, follow_redirects):
+        captured.update(url=url, payload=json)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    monkeypatch.setattr("pricewatch.services.notifications.time.time", lambda: 1700000000)
+    webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    service = NotificationService(
+        factory, SecretStr(webhook), signing_secret=SecretStr("private-sign-key")
+    )
+    assert isinstance(service.transport, FeishuSignedTransport)
+    assert service.test_feishu().sent
+    assert captured["url"] == webhook
+    payload = captured["payload"]
+    assert payload["timestamp"] == "1700000000"
+    expected = base64.b64encode(
+        hmac.new(b"1700000000\nprivate-sign-key", b"", hashlib.sha256).digest()
+    ).decode()
+    assert payload["sign"] == expected
+    assert payload["msg_type"] == "text"
+    assert "飞书通知已连接" in payload["content"]["text"]
+
+
 class FakeTransport:
     def __init__(self, outcomes=(True,)):
         self.calls = 0
@@ -89,6 +128,93 @@ def test_duplicate_event_is_not_sent_twice(environment):
     assert "10:00" in transport.messages[0]
     with factory() as session:
         assert len(session.scalars(select(NotificationDelivery)).all()) == 1
+
+
+def test_feishu_price_message_omits_folded_options_but_identifies_keyboard(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.configuration = {
+            "gpu": "RTX 5090",
+            "summary": "RTX 5090 · Killer Wi-Fi 7 · 360W power",
+            "extras": {
+                "Keyboard": "CherryMX",
+                "Wireless": "Killer Wi-Fi 7",
+                "Power Supply": "360W power",
+                "Documentation": "No Documentation",
+            },
+        }
+    with factory() as session:
+        product = session.get(Product, product_id)
+        body = format_message(price_event(product_id), product)
+    assert "RTX 5090" in body
+    assert "CherryMX" in body
+    assert "Killer Wi-Fi 7" not in body
+    assert "360W power" not in body
+    assert "No Documentation" not in body
+
+
+def test_feishu_price_message_lists_price_relevant_configuration_one_per_line(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.configuration = {
+            "cpu": "Core Ultra 9",
+            "gpu": "RTX 5090",
+            "memory": "64GB DDR5",
+            "storage": "2TB SSD",
+            "display": '18" WQXGA',
+            "os": "Windows 11 Home",
+            "extras": {
+                "Keyboard": "CherryMX RGB",
+                "Wireless": "Wi-Fi 7",
+                "Documentation": "No Documentation",
+            },
+        }
+    with factory() as session:
+        body = format_message(price_event(product_id), session.get(Product, product_id))
+
+    lines = body.splitlines()
+    for line in (
+        "处理器: Core Ultra 9",
+        "显卡: RTX 5090",
+        "内存: 64GB DDR5",
+        "存储: 2TB SSD",
+        '屏幕: 18" WQXGA',
+        "系统: Windows 11 Home",
+        "键盘: CherryMX RGB",
+    ):
+        assert line in lines
+    assert any(line.startswith("价格: $3,000.00 → $2,900.00") for line in lines)
+    assert "北京时间: 2026-09-21 10:00" in lines
+    assert "商品链接: https://www.dell.com/x" in lines
+    assert "Wi-Fi 7" not in body
+    assert "No Documentation" not in body
+    assert " · Core Ultra 9" not in body
+
+
+def test_feishu_initial_price_has_a_separate_labeled_price_line(environment):
+    from pricewatch.services.notifications import format_message
+
+    factory, product_id = environment
+    event = DomainEvent(
+        product_id,
+        "initial_observation",
+        datetime(2026, 9, 21, 2, tzinfo=UTC),
+        {},
+        {"price_minor": 674999},
+    )
+    with factory() as session:
+        body = format_message(event, session.get(Product, product_id))
+
+    lines = body.splitlines()
+    assert "配置: RTX 5090" in lines
+    assert "价格: $6,749.99" in lines
+    assert "北京时间: 2026-09-21 10:00" in lines
 
 
 def test_failed_delivery_retries_without_new_logical_event(environment):

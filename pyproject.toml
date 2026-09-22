@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pricewatch"
-version = "0.1.0"
+version = "1.0.1"
 description = "A small self-hosted Dell-first product price monitor"
 requires-python = ">=3.12,<3.15"
 license = { text = "MIT" }

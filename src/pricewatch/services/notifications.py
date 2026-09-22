@@ -1,11 +1,16 @@
 """Deduplicated Feishu delivery through Apprise."""
 
+import base64
+import hashlib
+import hmac
 import re
+import time
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+import httpx
 from apprise import Apprise
 from pydantic import SecretStr
 from sqlalchemy import select
@@ -13,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.db.models import NotificationDelivery, Product
 from pricewatch.domain.events import DomainEvent
+from pricewatch.domain.products import ProductConfiguration
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{20,128}\Z")
 _FEISHU_HOSTS = {"open.feishu.cn", "open.larksuite.com"}
@@ -53,15 +59,76 @@ class AppriseTransport:
         return bool(notifier.notify(title=title, body=body))
 
 
+class FeishuSignedTransport:
+    """Use the official robot signing fields when signature verification is enabled."""
+
+    def __init__(self, webhook: str, secret: SecretStr) -> None:
+        token_url = feishu_apprise_url(webhook)
+        token = token_url.removeprefix("feishu://")
+        self.webhook = (
+            webhook
+            if webhook.startswith("https://")
+            else f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
+        )
+        self.secret = secret
+
+    def send(self, destination: str, title: str, body: str) -> bool:
+        timestamp = str(int(time.time()))
+        key = f"{timestamp}\n{self.secret.get_secret_value()}".encode()
+        signature = base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode()
+        try:
+            response = httpx.post(
+                self.webhook,
+                json={
+                    "timestamp": timestamp,
+                    "sign": signature,
+                    "msg_type": "text",
+                    "content": {"text": f"{title}\n{body}"},
+                },
+                timeout=10,
+                follow_redirects=False,
+            )
+            return response.status_code == 200 and response.json().get("code") == 0
+        except (httpx.HTTPError, ValueError, TypeError):
+            return False
+
+
 @dataclass(frozen=True)
 class DeliveryResult:
     sent: bool
     status: str
 
 
+def _message_configuration(record: dict[str, object] | None) -> list[str]:
+    if not record:
+        return ["配置待确认"]
+    config = ProductConfiguration.from_record(record)
+    parts = [
+        f"{label}: {value}"
+        for label, value in (
+            ("处理器", config.cpu),
+            ("显卡", config.gpu),
+            ("内存", config.memory),
+            ("存储", config.storage),
+            ("屏幕", config.display),
+            ("系统", config.os),
+        )
+        if value
+    ]
+    keyboard = config.extras.get("Keyboard")
+    if keyboard:
+        parts.append(f"键盘: {keyboard}")
+    if parts:
+        return parts
+    if config.extras:
+        return ["配置待确认"]
+    summary = record.get("summary")
+    return [f"配置: {summary}"] if isinstance(summary, str) and summary.strip() else ["配置待确认"]
+
+
 def format_message(event: DomainEvent, product: Product) -> str:
     name = product.name or "监控商品"
-    config = (product.configuration or {}).get("summary", "配置待确认")
+    config = _message_configuration(product.configuration)
     time = event.observed_at.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
     labels = {
         "initial_observation": "首次价格",
@@ -72,7 +139,7 @@ def format_message(event: DomainEvent, product: Product) -> str:
         "check_failed": "连续检查失败",
         "check_recovered": "检查已恢复",
     }
-    lines = [f"{name} · {labels.get(event.kind, event.kind)}", str(config)]
+    lines = [f"{name} · {labels.get(event.kind, event.kind)}", "", *config, ""]
     previous = event.old.get("price_minor")
     current = event.new.get("price_minor")
     currency = event.new.get("currency") or "USD"
@@ -82,10 +149,11 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if isinstance(previous, int):
             delta = current - previous
             lines.append(
-                f"{price_prefix}{previous / 100:,.2f} → {price} ({delta / 100:+,.2f} {currency})"
+                f"价格: {price_prefix}{previous / 100:,.2f} → {price}"
+                f" ({delta / 100:+,.2f} {currency})"
             )
         else:
-            lines.append(price)
+            lines.append(f"价格: {price}")
         if (
             product.notify_mode == "target_or_change"
             and product.target_price_minor is not None
@@ -108,7 +176,9 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if old_description or new_description:
             lines.append(f"原配置: {old_description or '未知'}")
             lines.append(f"新配置: {new_description or '未知'}")
-    lines.extend([f"北京时间 {time}", product.canonical_url or product.requested_url])
+    lines.extend(
+        [f"北京时间: {time}", f"商品链接: {product.canonical_url or product.requested_url}"]
+    )
     return "\n".join(lines)
 
 
@@ -118,10 +188,15 @@ class NotificationService:
         factory: sessionmaker[Session],
         webhook: SecretStr,
         transport: NotificationTransport | None = None,
+        signing_secret: SecretStr | None = None,
     ) -> None:
         self.factory = factory
         self.destination = feishu_apprise_url(webhook.get_secret_value())
-        self.transport = transport or AppriseTransport()
+        self.transport = transport or (
+            FeishuSignedTransport(webhook.get_secret_value(), signing_secret)
+            if signing_secret is not None
+            else AppriseTransport()
+        )
 
     def test_feishu(self, webhook: SecretStr | None = None) -> DeliveryResult:
         target = feishu_apprise_url(webhook.get_secret_value()) if webhook else self.destination

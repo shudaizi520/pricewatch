@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -38,17 +39,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings()  # type: ignore[call-arg]
     engine, session_factory = create_engine_and_session(resolved)
     Base.metadata.create_all(engine)
-    checker = CheckService(session_factory, AcquisitionPipeline(HttpFetcher(), BrowserFetcher()))
+    upstream_socks = (
+        (str(resolved.dell_socks_proxy_host), resolved.dell_socks_proxy_port)
+        if resolved.dell_socks_proxy_host is not None
+        and resolved.dell_socks_proxy_port is not None
+        else None
+    )
+    checker = CheckService(
+        session_factory,
+        AcquisitionPipeline(HttpFetcher(), BrowserFetcher(upstream_socks=upstream_socks)),
+    )
     scheduler = SchedulerService(session_factory, checker)
     backups = BackupService(session_factory, resolved.data_dir)
     retention = RetentionService(session_factory)
     with session_factory() as session:
         saved_webhook = session.get(Setting, "feishu_webhook")
         if saved_webhook is not None and saved_webhook.value_text:
-            secret = SecretBox(resolved.app_secret_key.get_secret_value()).decrypt(
-                saved_webhook.value_text
+            box = SecretBox(resolved.app_secret_key.get_secret_value())
+            secret = box.decrypt(saved_webhook.value_text)
+            saved_signing = session.get(Setting, "feishu_signing_secret")
+            signing = (
+                SecretStr(box.decrypt(saved_signing.value_text))
+                if saved_signing is not None and saved_signing.value_text
+                else None
             )
-            checker.notifier = NotificationService(session_factory, SecretStr(secret))
+            checker.notifier = NotificationService(
+                session_factory, SecretStr(secret), signing_secret=signing
+            )
 
     async def maintain() -> None:
         backups.create("daily")
@@ -80,6 +97,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.backups = backups
     app.state.previews = {}
+    app.state.option_catalogs = {}
+    static_dir = Path(__file__).parent / "static"
+    app.state.cards_css_version = sha256((static_dir / "cards.css").read_bytes()).hexdigest()[:12]
+    app.state.app_js_version = sha256((static_dir / "app.js").read_bytes()).hexdigest()[:12]
     secure_cookie = bool(
         resolved.external_url and str(resolved.external_url).startswith("https://")
     )
@@ -95,7 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(products_router)
     app.include_router(settings_router)
     app.include_router(status_router)
-    app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:

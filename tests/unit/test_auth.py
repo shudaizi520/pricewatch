@@ -12,13 +12,19 @@ def csrf_token(html: str) -> str:
     return match.group(1)
 
 
-async def create_admin(client, username: str = "owner", password: str = "a-strong-password"):
+async def create_admin(
+    client,
+    username: str = "owner",
+    password: str = "a-strong-password",
+    confirmation: str | None = None,
+):
     page = await client.get("/initialize")
     return await client.post(
         "/initialize",
         data={
             "username": username,
             "password": password,
+            "confirm_password": confirmation if confirmation is not None else password,
             "csrf_token": csrf_token(page.text),
         },
         follow_redirects=False,
@@ -39,6 +45,44 @@ async def test_registration_closes_after_first_admin(client):
 
     assert response.status_code == 303
     assert (await client.get("/initialize")).status_code == 404
+
+
+@pytest.mark.anyio
+async def test_initialize_requires_matching_confirmation(client):
+    response = await create_admin(client, confirmation="different-strong-password")
+
+    assert response.status_code == 422
+    assert "两次密码不一致" in response.text
+    assert 'value="owner"' in response.text
+    assert "a-strong-password" not in response.text
+    assert "different-strong-password" not in response.text
+    assert (await client.get("/initialize")).status_code == 200
+
+
+@pytest.mark.anyio
+async def test_initialize_requires_confirmation_field(client):
+    page = await client.get("/initialize")
+    response = await client.post(
+        "/initialize",
+        data={
+            "username": "owner",
+            "password": "a-strong-password",
+            "csrf_token": csrf_token(page.text),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+    assert (await client.get("/initialize")).status_code == 200
+
+
+@pytest.mark.anyio
+async def test_initialize_form_shows_confirmation_input(client):
+    response = await client.get("/initialize")
+
+    assert response.status_code == 200
+    assert "确认密码" in response.text
+    assert 'name="confirm_password"' in response.text
 
 
 @pytest.mark.anyio

@@ -1,20 +1,18 @@
 services:
   pricewatch:
-    build: .
-    image: ${PRICEWATCH_IMAGE:-pricewatch:local}
+    image: ghcr.io/shudaizi520/pricewatch:1.0.1
     restart: unless-stopped
     init: true
     shm_size: 512mb
     ports:
       - "${PRICEWATCH_BIND:-127.0.0.1}:8080:8080"
     environment:
-      PRICEWATCH_APP_SECRET_KEY: ${PRICEWATCH_APP_SECRET_KEY:?Set a long random secret in .env}
-      PRICEWATCH_EXTERNAL_URL: ${PRICEWATCH_EXTERNAL_URL:-}
       PRICEWATCH_TIMEZONE: Asia/Shanghai
+      PRICEWATCH_EXTERNAL_URL: ${PRICEWATCH_EXTERNAL_URL:-}
       PRICEWATCH_DELL_SOCKS_PROXY_HOST: ${PRICEWATCH_DELL_SOCKS_PROXY_HOST:-}
       PRICEWATCH_DELL_SOCKS_PROXY_PORT: ${PRICEWATCH_DELL_SOCKS_PROXY_PORT:-}
     volumes:
-      - ${PRICEWATCH_DATA_PATH:-./data}:/data
+      - pricewatch-data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).close()"]
       interval: 30s
@@ -23,3 +21,6 @@ services:
       retries: 3
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  pricewatch-data:

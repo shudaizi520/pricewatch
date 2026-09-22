@@ -7,15 +7,32 @@
   <form action="/products/preview" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="product-url">商品链接</label>
-    <input id="product-url" type="url" name="url" placeholder="https://www.dell.com/en-us/..." autocomplete="url" required>
+    <input id="product-url" type="url" name="url" value="{{ url or '' }}" placeholder="https://www.dell.com/en-us/..." autocomplete="url" required>
     <p class="hint">优先支持美国戴尔；其他商店视页面价格数据而定。</p>
     <button type="submit" class="button primary">读取并预览</button>
+    <button type="submit" class="button" formaction="/products/options">选择戴尔配置</button>
   </form>
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
 </section>
+{% if catalog %}
+<section class="panel form-panel" aria-label="戴尔配置选择">
+  <div class="eyebrow">CONFIGURATION</div><h2>选择要监控的配置</h2>
+  <form action="/products/preview" method="post" class="settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="catalog_token" value="{{ catalog_token }}">
+    <input type="hidden" name="url" value="{{ url }}">
+    {% for group, choices in catalog.items() %}
+      {% if group in ['Processor', 'Graphics Card', 'Memory', 'Storage', 'Displays', 'Operating System', 'Keyboard'] %}
+      <label>{{ group }}<select name="option__{{ group }}"><option value="">保持页面默认</option>{% for choice in choices %}<option value="{{ choice }}">{{ choice }}</option>{% endfor %}</select></label>
+      {% endif %}
+    {% endfor %}
+    <button type="submit" class="button primary">核对这套配置的价格</button>
+  </form>
+</section>
+{% endif %}
 {% if preview %}
-<section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2><p class="config">{{ preview.configuration.summary() or '配置尚未识别' }}</p><div class="preview-price">{{ '$' if preview.price.currency == 'USD' else preview.price.currency ~ ' ' }}{{ '%.2f' | format(preview.price.minor / 100) }}</div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
-  <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并开始监控</button></form>
+<section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2>{% if preview_rows %}<dl class="config-rows detail-config">{% for label, value in preview_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% else %}<p class="config">配置尚未识别</p>{% endif %}{% if recipe %}<p class="muted">已按所选配置读取页面最终报价</p>{% endif %}<div class="preview-price">{{ '$' if preview.price.currency == 'USD' else preview.price.currency ~ ' ' }}{{ '%.2f' | format(preview.price.minor / 100) }}</div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
+  <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并添加商品</button></form>
 </section>
 {% endif %}
 {% endblock %}

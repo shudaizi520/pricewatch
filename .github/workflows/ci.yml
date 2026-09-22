@@ -37,11 +37,61 @@ jobs:
             if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:18080/healthz
-          docker exec pricewatch-ci python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(viewport={'width':390,'height':844}); page.goto('http://127.0.0.1:8080/initialize'); page.get_by_label('账号').fill('owner'); page.get_by_label('密码').fill('VeryStrongSecret123!'); page.get_by_role('button',name='创建并进入').click(); assert page.get_by_role('heading',name='商品监控').is_visible(); page.get_by_role('button',name='深色').click(); page.reload(); assert page.locator('html').get_attribute('data-theme')=='dark'; b.close(); p.stop()"
+          if ! curl -fsS http://127.0.0.1:18080/healthz; then
+            docker inspect --format '{{.State.Status}} (exit {{.State.ExitCode}}): {{.State.Error}}' pricewatch-ci
+            docker exec pricewatch-ci ps -ef
+            docker exec pricewatch-ci sh -c 'ls -la /tmp; ls -la /tmp/.X11-unix 2>/dev/null || true'
+            docker logs pricewatch-ci
+            exit 1
+          fi
+          docker exec -i pricewatch-ci python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page(viewport={"width": 390, "height": 844})
+              page.goto("http://127.0.0.1:8080/initialize")
+              page.get_by_label("账号").fill("owner")
+              page.get_by_label("密码", exact=True).fill("VeryStrongSecret123!")
+              page.get_by_label("确认密码").fill("VeryStrongSecret123!")
+              page.get_by_role("button", name="创建并进入").click()
+              assert page.get_by_role("heading", name="商品监控").is_visible()
+              with page.expect_navigation(wait_until="domcontentloaded"):
+                  page.get_by_role("button", name="深色").click()
+              page.reload(wait_until="domcontentloaded")
+              assert page.locator("html").get_attribute("data-theme") == "dark"
+              browser.close()
+          PY
+      - name: Smoke test fresh install without supplied application secret
+        run: |
+          docker volume create pricewatch-ci-fresh-data
+          docker run -d --name pricewatch-ci-fresh -v pricewatch-ci-fresh-data:/data -p 127.0.0.1:18081:8080 pricewatch:ci
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:18081/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18081/healthz
+          docker exec pricewatch-ci-fresh python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(); page.goto('http://127.0.0.1:8080/initialize'); page.get_by_label('账号').fill('owner'); page.get_by_label('密码',exact=True).fill('VeryStrongSecret123!'); page.get_by_label('确认密码').fill('VeryStrongSecret123!'); page.get_by_role('button',name='创建并进入').click(); assert page.get_by_role('heading',name='商品监控').is_visible(); b.close(); p.stop()"
+          before="$(docker exec pricewatch-ci-fresh sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker exec pricewatch-ci-fresh python -c "from pathlib import Path; p=Path('/data/.pricewatch-secret'); assert p.stat().st_mode & 0o777 == 0o600"
+          docker restart pricewatch-ci-fresh
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:18081/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18081/healthz
+          test "$before" = "$(docker exec pricewatch-ci-fresh sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker exec pricewatch-ci-fresh python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(); page.goto('http://127.0.0.1:8080/login'); page.get_by_label('账号').fill('owner'); page.get_by_label('密码').fill('VeryStrongSecret123!'); page.get_by_role('button',name='登录').click(); assert page.get_by_role('heading',name='商品监控').is_visible(); b.close(); p.stop()"
+          secret="$(docker exec pricewatch-ci-fresh cat /data/.pricewatch-secret)"
+          if docker logs pricewatch-ci-fresh 2>&1 | grep -Fq "$secret"; then
+            echo "Application secret appeared in container logs" >&2
+            exit 1
+          fi
       - name: Remove smoke container
         if: always()
-        run: docker rm -f pricewatch-ci || true
+        run: |
+          docker rm -f pricewatch-ci pricewatch-ci-fresh || true
+          docker volume rm pricewatch-ci-fresh-data || true
       - name: Report all high and critical container vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -56,3 +106,58 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+  published-image-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull public image and start blank Compose install
+        run: |
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml pull
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml up -d
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+      - name: Set up administrator and verify restart persistence
+        run: |
+          container="$(docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml ps -q pricewatch)"
+          docker exec -i "$container" python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.goto("http://127.0.0.1:8080/initialize")
+              page.get_by_label("账号").fill("owner")
+              page.get_by_label("密码", exact=True).fill("VeryStrongSecret123!")
+              page.get_by_label("确认密码").fill("VeryStrongSecret123!")
+              page.get_by_role("button", name="创建并进入").click()
+              assert page.get_by_role("heading", name="商品监控").is_visible()
+              browser.close()
+          PY
+          before="$(docker exec "$container" sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml restart
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          test "$before" = "$(docker exec "$container" sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker exec -i "$container" python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.goto("http://127.0.0.1:8080/login")
+              page.get_by_label("账号").fill("owner")
+              page.get_by_label("密码").fill("VeryStrongSecret123!")
+              page.get_by_role("button", name="登录").click()
+              assert page.get_by_role("heading", name="商品监控").is_visible()
+              browser.close()
+          PY
+      - name: Remove isolated smoke install
+        if: always()
+        run: docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml down --volumes

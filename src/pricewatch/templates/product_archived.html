@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}已归档 · PriceWatch{% endblock %}
+{% block content %}
+<a class="back" href="/">← 返回监控</a>
+<div class="page-head"><div><div class="eyebrow">ARCHIVE</div><h1>已归档商品</h1><p class="muted">历史记录仍保留，可以恢复或永久删除。</p></div></div>
+{% if products %}
+<section class="archive-list" aria-label="已归档商品">
+{% for product in products %}
+  <article class="panel archive-item"><div><h2>{{ product.name or product.requested_url }}</h2><p class="muted">{{ product.configuration.summary if product.configuration else product.source_site }}</p></div><div class="bottom-actions"><form action="/products/{{ product.id }}/restore" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">恢复为暂停</button></form><a class="button subtle" href="/products/{{ product.id }}/delete">永久删除</a></div></article>
+{% endfor %}
+</section>
+{% else %}<section class="empty"><h2>暂无归档商品</h2></section>{% endif %}
+{% endblock %}
