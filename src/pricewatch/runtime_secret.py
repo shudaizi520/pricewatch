@@ -27,7 +27,10 @@ def _read_secret(path: Path) -> str:
             raise RuntimeError("Secret file permissions must be private (0600)")
         with os.fdopen(descriptor, "r", encoding="ascii") as handle:
             descriptor = -1
-            value = handle.read(128)
+            try:
+                value = handle.read(128)
+            except UnicodeError as error:
+                raise RuntimeError("Secret file is invalid") from error
     finally:
         if descriptor >= 0:
             os.close(descriptor)

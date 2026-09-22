@@ -80,6 +80,18 @@ def test_world_readable_secret_is_rejected(tmp_path: Path) -> None:
     assert "permissions" in result.stderr.lower()
 
 
+def test_non_ascii_secret_fails_without_traceback(tmp_path: Path) -> None:
+    secret_file = tmp_path / ".pricewatch-secret"
+    secret_file.write_bytes(b"\xff" * 64)
+    secret_file.chmod(0o600)
+
+    result = resolve(tmp_path)
+
+    assert result.returncode != 0
+    assert "secret file is invalid" in result.stderr.lower()
+    assert "traceback" not in result.stderr.lower()
+
+
 def test_parallel_first_starts_share_one_complete_secret(tmp_path: Path) -> None:
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: resolve(tmp_path), range(4)))
