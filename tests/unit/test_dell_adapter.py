@@ -82,6 +82,27 @@ def test_current_dell_selected_options_and_lowercase_currency():
     assert snapshot.configuration.display == '18", WQXGA, 300Hz'
 
 
+@pytest.mark.parametrize("processor", ["Intel Core i9-14900KF", "Intel Core i7-14700F"])
+def test_alienware_desktop_selected_core_i_processor_is_primary_configuration(processor):
+    html = f"""
+    <html><head><script type="application/ld+json">{{
+      "@type":"Product", "name":"Alienware Area-51 Gaming Desktop",
+      "sku":"area51_desktop", "offers":{{"price":"8599.99", "priceCurrency":"USD"}}
+    }}</script></head><body>
+    <div class="option-grid-item"><span data-test-id="option-title">{processor} processor</span>
+      <span class="price scoprice">Selected</span></div>
+    <div class="option-grid-item"><span data-test-id="option-title">RTX 5090 32GB GDDR7</span>
+      <span class="price scoprice">Selected</span></div>
+    <div class="option-grid-item"><span data-test-id="option-title">64GB DDR5</span>
+      <span class="price scoprice">Selected</span></div>
+    <div class="option-grid-item"><span data-test-id="option-title">2TB SSD</span>
+      <span class="price scoprice">Selected</span></div>
+    </body></html>
+    """
+    snapshot = DellUsAdapter().extract(page(html))
+    assert snapshot.configuration.cpu == f"{processor} processor"
+
+
 def test_configured_offer_uses_selected_buy_box_price_not_stale_jsonld():
     html = (FIXTURES / "options.html").read_text()
     html = html.replace(

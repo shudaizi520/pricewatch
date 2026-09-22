@@ -124,7 +124,7 @@ class DellUsAdapter:
             raise ExtractionError("Dell product SKU is missing or invalid")
         description = _text(structured.get("description"))
         configuration = ProductConfiguration(
-            cpu=_selected_option(soup, r"Core\s*Ultra|Ryzen")
+            cpu=_selected_option(soup, r"Core\s*(?:Ultra|i[3579])|Ryzen")
             or _visible(soup, "processor")
             or _find_description(description, r"(?:Intel )?Core Ultra\s*\d+\s*[A-Z0-9]+"),
             gpu=_selected_option(soup, r"RTX\W*\d{4}|Radeon")
