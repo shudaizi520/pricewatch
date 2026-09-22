@@ -39,7 +39,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings or Settings()  # type: ignore[call-arg]
     engine, session_factory = create_engine_and_session(resolved)
     Base.metadata.create_all(engine)
-    checker = CheckService(session_factory, AcquisitionPipeline(HttpFetcher(), BrowserFetcher()))
+    upstream_socks = (
+        (str(resolved.dell_socks_proxy_host), resolved.dell_socks_proxy_port)
+        if resolved.dell_socks_proxy_host is not None
+        and resolved.dell_socks_proxy_port is not None
+        else None
+    )
+    checker = CheckService(
+        session_factory,
+        AcquisitionPipeline(HttpFetcher(), BrowserFetcher(upstream_socks=upstream_socks)),
+    )
     scheduler = SchedulerService(session_factory, checker)
     backups = BackupService(session_factory, resolved.data_dir)
     retention = RetentionService(session_factory)

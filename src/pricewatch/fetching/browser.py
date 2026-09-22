@@ -57,10 +57,12 @@ class BrowserFetcher:
         resolver: Resolver = system_resolver,
         max_body_bytes: int = 8 * 1024 * 1024,
         subresource_fetcher: HttpFetcher | None = None,
+        upstream_socks: tuple[str, int] | None = None,
     ) -> None:
         self.resolver = resolver
         self.max_body_bytes = max_body_bytes
         self.subresource_fetcher = subresource_fetcher or HttpFetcher(resolver=resolver)
+        self.upstream_socks = upstream_socks
 
     async def handle_route(self, route: Route, expected_host: str) -> None:
         try:
@@ -109,7 +111,10 @@ class BrowserFetcher:
                     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
                 ]
                 if host in {"www.dell.com", "dell.com"}:
-                    proxy = await stack.enter_async_context(SafeSocksProxy(self.resolver))
+                    upstream = self.upstream_socks if url.path.startswith("/en-us/shop/") else None
+                    proxy = await stack.enter_async_context(
+                        SafeSocksProxy(self.resolver, upstream_socks=upstream)
+                    )
                     launch_args.extend(
                         [
                             f"--proxy-server=socks5://127.0.0.1:{proxy.port}",
@@ -195,6 +200,13 @@ class AcquisitionPipeline:
     ) -> tuple[AcquiredPage, ProductSnapshot]:
         if dell_selection:
             page = await self.browser.fetch(url, dell_selection=dell_selection)
+            return page, adapter.extract(page)
+        if (
+            getattr(self.browser, "upstream_socks", None) is not None
+            and url.host in {"www.dell.com", "dell.com"}
+            and url.path.startswith("/en-us/shop/")
+        ):
+            page = await self.browser.fetch(url)
             return page, adapter.extract(page)
         try:
             page = await self.http.fetch(url)

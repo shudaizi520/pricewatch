@@ -14,6 +14,8 @@
    当前 TrueNAS 试用实例在本地镜像重建失败后，临时将 `./src` 只读挂载到容器的 `/app/src`。需要复现时，可显式启用 `docker-compose.source.yml` 覆盖文件；正式使用版本化镜像升级或回退时不要启用此覆盖文件，以免宿主机源码覆盖镜像代码。依赖变更仍须重建镜像。
 4. 若反向代理不在 TrueNAS 本机，先把 `.env` 中的 `PRICEWATCH_BIND` 改为仅反代能访问的 TrueNAS 局域网地址，再配置反代。对公网务必使用 HTTPS，将 `.env` 的 `PRICEWATCH_EXTERNAL_URL` 设为完整 HTTPS 地址，再执行 `docker compose up -d`。在反代传递 `Host`、`X-Forwarded-Proto`，并限制管理页面的公开访问范围。若代理与容器同网络但不在主机回环上，需要按实际网络拓扑调整端口绑定。
 
+如果美国戴尔对 NAS 的直连请求返回 403，可选填 `PRICEWATCH_DELL_SOCKS_PROXY_HOST`（NAS 容器可访问的代理 IP）和 `PRICEWATCH_DELL_SOCKS_PROXY_PORT`。两项必须一起设置；只用于美国戴尔的浏览器取价，不影响其他商店，也不会改变每张卡片的检查时间。应用仍先校验目标域名解析得到的公网 IP，再通过 SOCKS5 代理连接；代理不可用时会报告失败，不会偷偷改走直连或写入猜测价格。若代理无需认证且监听局域网，务必在软路由防火墙中只允许 NAS 访问该端口，切勿向公网开放。
+
 Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR 版本时，可以在 `.env` 的 `PRICEWATCH_IMAGE` 改为明确版本（例如 `ghcr.io/你的账号/pricewatch:1.0.0`），先 `docker compose pull`，再 `docker compose up -d`。不要依赖 `latest` 回滚。
 
 ## 初次验收
@@ -42,7 +44,7 @@ Compose 默认本地构建 `pricewatch:local`。将来有经过验收的 GHCR �
 ## 状态与排查
 
 - `docker compose ps` 和 `docker compose logs --tail=100 pricewatch` 可看容器状态，`curl -f http://127.0.0.1:8080/healthz` 可看健康检查。日志不要包含完整飞书 Webhook；分享日志前仍建议检查脱敏。
-- 戴尔返回 403 或出现人机验证时，应用会尝试受限的有界面 Chromium；不会代替用户完成验证码。若仍失败，请从 TrueNAS 所在网络用普通浏览器确认网页能正常显示，且价格与匿名/地区会话一致。站点策略可能再次变化，不能保证长期可抓取。
+- 戴尔返回 403 或出现人机验证时，应用会尝试受限的有界面 Chromium；可为美国戴尔单独配置上述 SOCKS5 代理，但不会代替用户完成验证码。代理路径可用也不保证站点今后始终允许自动访问；检查失败不会覆盖上次可信价格。
 - 反代登录循环一般与 HTTPS/外部地址及 Cookie 有关，检查 `PRICEWATCH_EXTERNAL_URL` 和反代转发头。
 - 忘记密码时，先停止服务；把密码写入权限为 600 的数据集文件，再运行 `docker compose run --rm --no-deps --entrypoint pricewatch pricewatch admin reset-password --username 用户名 --password-file /data/密码文件名`。重置后删除此明文文件，不要把密码写进命令历史。
 - 用 `docker stats` 记录真实空闲内存、浏览器检查峰值；用 `docker image ls` 记录镜像大小。目前尚未测量浏览器抓取峰值，不提供未经测量的数字。

@@ -42,6 +42,18 @@ def test_compose_requires_secret():
     assert ":?" in value
 
 
+def test_compose_passes_optional_dell_socks_settings():
+    config = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    environment = config["services"]["pricewatch"]["environment"]
+
+    assert environment["PRICEWATCH_DELL_SOCKS_PROXY_HOST"] == (
+        "${PRICEWATCH_DELL_SOCKS_PROXY_HOST:-}"
+    )
+    assert environment["PRICEWATCH_DELL_SOCKS_PROXY_PORT"] == (
+        "${PRICEWATCH_DELL_SOCKS_PROXY_PORT:-}"
+    )
+
+
 def test_startup_applies_schema_without_creating_unneeded_backup(tmp_path):
     database = tmp_path / "pricewatch.db"
     settings = Settings(

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -197,6 +198,90 @@ async def test_dell_browser_does_not_trigger_interception_403(monkeypatch, dell_
 
 
 @pytest.mark.anyio
+async def test_us_dell_browser_uses_configured_upstream_socks(monkeypatch):
+    url = "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example"
+    requests = []
+
+    async def upstream(reader, writer):
+        try:
+            assert await reader.readexactly(3) == b"\x05\x01\x00"
+            writer.write(b"\x05\x00")
+            await writer.drain()
+            requests.append(await reader.readexactly(10))
+            writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+
+    upstream_server = await asyncio.start_server(upstream, "127.0.0.1", 0)
+    upstream_port = upstream_server.sockets[0].getsockname()[1]
+
+    class FakePage:
+        def __init__(self, page_url):
+            self.url = page_url
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def content(self):
+            return "<html><body>Dell Price $3,999.99</body></html>"
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage(url)
+
+        async def close(self):
+            pass
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **kwargs):
+            address = next(
+                arg for arg in kwargs["args"] if arg.startswith("--proxy-server=socks5://")
+            )
+            local_port = int(address.rsplit(":", 1)[1])
+            reader, writer = await asyncio.open_connection("127.0.0.1", local_port)
+            try:
+                writer.write(b"\x05\x01\x00")
+                await writer.drain()
+                assert await reader.readexactly(2) == b"\x05\x00"
+                writer.write(b"\x05\x01\x00\x03\x0cwww.dell.com\x01\xbb")
+                await writer.drain()
+                assert (await reader.readexactly(10))[:2] == b"\x05\x00"
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    try:
+        page = await BrowserFetcher(
+            resolver=lambda _: ["93.184.216.34"],
+            upstream_socks=("127.0.0.1", upstream_port),
+        ).fetch(URL(url))
+    finally:
+        upstream_server.close()
+        await upstream_server.wait_closed()
+
+    assert page.status == 200
+    assert requests == [b"\x05\x01\x00\x01\x5d\xb8\xd8\x22\x01\xbb"]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "dell_url",
     [
@@ -386,6 +471,34 @@ async def test_configured_pipeline_never_uses_unselected_http_page():
         dell_selection={"Graphics Card": "RTX 5090"},
     )
     assert snapshot == "configured"
+
+
+@pytest.mark.anyio
+async def test_us_dell_preview_with_proxy_skips_direct_http_request():
+    class DirectHttp:
+        async def fetch(self, _url):
+            raise AssertionError("Dell preview should not make a direct request")
+
+    class ProxiedBrowser:
+        upstream_socks = ("192.168.50.199", 1070)
+
+        async def fetch(self, url, dell_selection=None):
+            assert dell_selection is None
+            return AcquiredPage(
+                str(url), str(url), 200, b"<html></html>", {}, "browser", datetime.now(UTC)
+            )
+
+    class Adapter:
+        def extract(self, _page):
+            return "proxied-preview"
+
+    pipeline = AcquisitionPipeline(DirectHttp(), ProxiedBrowser())
+    _, snapshot = await pipeline.acquire(
+        URL("https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example"),
+        Adapter(),
+    )
+
+    assert snapshot == "proxied-preview"
 
 
 @pytest.mark.anyio

@@ -1,6 +1,7 @@
 """Loopback SOCKS5 tunnel that pins browser connections to public IPs."""
 
 import asyncio
+import ipaddress
 import socket
 from contextlib import suppress
 from typing import Self
@@ -30,8 +31,13 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
 class SafeSocksProxy:
     """Serve only HTTP(S) tunnels whose every DNS answer is globally routable."""
 
-    def __init__(self, resolver: Resolver = system_resolver) -> None:
+    def __init__(
+        self,
+        resolver: Resolver = system_resolver,
+        upstream_socks: tuple[str, int] | None = None,
+    ) -> None:
         self.resolver = resolver
+        self.upstream_socks = upstream_socks
         self.server: asyncio.Server | None = None
 
     async def __aenter__(self) -> Self:
@@ -57,6 +63,40 @@ class SafeSocksProxy:
         if target.host is None or target.host.casefold() != host.casefold():
             raise UnsafeUrlError("Invalid proxy destination")
         return public_addresses(target, self.resolver)[0]
+
+    async def _open_target(
+        self, address: str, port: int
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if self.upstream_socks is None:
+            return await asyncio.open_connection(address, port)
+
+        reader, writer = await asyncio.open_connection(*self.upstream_socks)
+        try:
+            writer.write(b"\x05\x01\x00")
+            await writer.drain()
+            if await reader.readexactly(2) != b"\x05\x00":
+                raise OSError("Upstream SOCKS authentication unavailable")
+
+            target = ipaddress.ip_address(address)
+            kind = b"\x01" if target.version == 4 else b"\x04"
+            writer.write(b"\x05\x01\x00" + kind + target.packed + port.to_bytes(2, "big"))
+            await writer.drain()
+            version, status, _, address_type = await reader.readexactly(4)
+            if version != 5 or status != 0:
+                raise OSError("Upstream SOCKS connection refused")
+            if address_type == 1:
+                length = 4
+            elif address_type == 4:
+                length = 16
+            elif address_type == 3:
+                length = (await reader.readexactly(1))[0]
+            else:
+                raise OSError("Invalid upstream SOCKS response")
+            await reader.readexactly(length + 2)
+            return reader, writer
+        except BaseException:
+            writer.close()
+            raise
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         upstream: asyncio.StreamWriter | None = None
@@ -89,9 +129,9 @@ class SafeSocksProxy:
                 return
             try:
                 upstream_reader, upstream_writer = await asyncio.wait_for(
-                    asyncio.open_connection(address, port), timeout=10
+                    self._open_target(address, port), timeout=10
                 )
-            except (OSError, TimeoutError):
+            except (OSError, TimeoutError, asyncio.IncompleteReadError):
                 writer.write(SOCKS_UNREACHABLE)
                 await writer.drain()
                 return
