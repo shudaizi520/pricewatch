@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.db.models import Administrator
 from pricewatch.services.auth import LoginThrottle, hash_password, verify_password
-from pricewatch.web.dependencies import csrf_token, verify_csrf
+from pricewatch.web.dependencies import csrf_token, has_admin, verify_csrf
 from pricewatch.web.forms import FormError, validate_password, validate_username
 
 router = APIRouter()
@@ -92,7 +92,9 @@ async def initialize(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> HTMLResponse:
+async def login_page(request: Request) -> Response:
+    if not has_admin(request):
+        return RedirectResponse("/initialize", status_code=303)
     return templates.TemplateResponse(
         request=request,
         name="login.html",
