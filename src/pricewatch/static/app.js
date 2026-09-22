@@ -5,6 +5,9 @@ document.querySelectorAll('form[data-confirm]').forEach(form => {
 });
 document.querySelectorAll('.card-time-picker').forEach(picker => {
   const input = picker.querySelector('input[type="time"]');
+  picker.addEventListener('toggle', () => {
+    if (!picker.open) input.value = picker.dataset.savedTime;
+  });
   picker.querySelector('[data-cancel-time]').addEventListener('click', () => {
     input.value = picker.dataset.savedTime;
     picker.open = false;

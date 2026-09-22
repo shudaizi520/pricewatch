@@ -88,6 +88,50 @@ async def test_card_time_picker_only_submits_after_explicit_save(admin_client):
 
 
 @pytest.mark.anyio
+async def test_card_time_picker_discards_unsaved_time_when_closed(admin_client):
+    from playwright.async_api import async_playwright
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/x",
+            status="paused",
+        )
+        session.add(product)
+        session.flush()
+        session.add(Setting(key=f"product_check_time:{product.id}", value_text="10:30"))
+
+    markup = (await admin_client.get("/")).text
+    script = Path(__file__).parents[2] / "src" / "pricewatch" / "static" / "app.js"
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(headless=True)
+        except Exception as error:
+            if "error while loading shared libraries" in str(error):
+                pytest.skip("Local Chromium system libraries are unavailable")
+            raise
+        try:
+            page = await browser.new_page()
+            await page.route(
+                "http://pricewatch.test/**",
+                lambda route: route.fulfill(
+                    status=200, content_type="text/html", body="<html></html>"
+                ),
+            )
+            await page.goto("http://pricewatch.test/")
+            await page.set_content(markup)
+            await page.add_script_tag(path=str(script))
+            picker = page.locator(".card-time-picker")
+            await picker.locator("summary").click()
+            await picker.locator('input[type="time"]').fill("11:45")
+            await picker.locator("summary").click()
+            assert await picker.locator('input[type="time"]').input_value() == "10:30"
+        finally:
+            await browser.close()
+
+
+@pytest.mark.anyio
 async def test_card_refresh_has_centered_loading_spinner(admin_client):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
