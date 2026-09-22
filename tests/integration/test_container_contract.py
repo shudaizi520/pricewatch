@@ -31,7 +31,7 @@ def test_ghcr_compose_installs_without_source_or_manual_secret():
     config = yaml.safe_load((ROOT / "compose.ghcr.yml").read_text())
     assert set(config["services"]) == {"pricewatch"}
     service = config["services"]["pricewatch"]
-    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.1"
+    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.2"
     assert "build" not in service
     assert service["volumes"] == ["pricewatch-data:/data"]
     assert "pricewatch-data" in config["volumes"]
@@ -45,6 +45,27 @@ def test_package_and_health_version_match_source_release():
     package = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert package["project"]["version"] == "1.0.2"
     assert __version__ == "1.0.2"
+
+
+def test_release_workflow_publishes_github_release_after_image():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+    jobs = workflow["jobs"]
+    assert jobs["publish"]["environment"] == "production"
+    assert jobs["publish"]["permissions"] == {"contents": "read", "packages": "write"}
+    assert any(
+        step.get("name") == "Publish linux/amd64 image with SBOM"
+        for step in jobs["publish"]["steps"]
+    )
+    job = jobs["release"]
+    assert job["needs"] == "publish"
+    assert job["environment"] == "production"
+    assert job["permissions"] == {"contents": "write"}
+    release = next(step for step in job["steps"] if step.get("name") == "Publish GitHub Release")
+    assert release["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert "gh release create" in release["run"]
+    assert "--verify-tag" in release["run"]
+    assert "--latest" in release["run"]
+    assert "compose.ghcr.yml" in release["run"]
 
 
 def test_image_non_root_one_worker_and_graphical_chromium():
