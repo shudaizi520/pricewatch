@@ -1,0 +1,6 @@
+{% macro time_columns(check_time) -%}
+<div class="time-columns" role="group" aria-label="每天检查时间 · 北京时间">
+  <label>小时<select name="check_hour" required><option value="" {% if not check_time %}selected{% endif %}>选小时</option>{% for hour in range(24) %}{% set value = '%02d' | format(hour) %}<option value="{{ value }}" {% if check_time and check_time[:2] == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+  <label>分钟<select name="check_minute" required><option value="" {% if not check_time %}selected{% endif %}>选分钟</option>{% for minute in range(60) %}{% set value = '%02d' | format(minute) %}<option value="{{ value }}" {% if check_time and check_time[3:] == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+</div>
+{%- endmacro %}

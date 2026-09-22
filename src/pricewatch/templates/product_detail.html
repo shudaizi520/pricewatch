@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% from "_time_columns.html" import time_columns %}
 {% block title %}{{ product.name or '商品详情' }} · PriceWatch{% endblock %}
 {% block content %}
 <a class="back" href="/">← 返回监控</a>
-{% if request.query_params.get('schedule_error') %}<div class="notice" role="alert">{{ '请先在商品卡片上设置北京时间' if request.query_params.get('schedule_error') == 'missing' else '这个时间已有自动检查的商品，请错开' }}</div>{% endif %}
+{% if request.query_params.get('schedule_error') %}<div class="notice" role="alert">{{ '请先选择小时和分钟' if request.query_params.get('schedule_error') == 'missing' else '这个时间已有自动检查的商品，请错开' if request.query_params.get('schedule_error') == 'conflict' else '检查时间无效，请重新选择' }}</div>{% endif %}
 <div class="page-head"><div><div class="eyebrow">{{ product.source_site | upper }} · {{ product.sku or 'PRODUCT' }}</div><h1>{{ product.name or '等待首次检查' }}</h1>{% if configuration_rows %}<dl class="config-rows detail-config">{% for label, value in configuration_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% else %}<p class="muted">暂无配置记录</p>{% endif %}</div><form action="/products/{{ product.id }}/check" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button primary" type="submit">立即检查</button></form></div>
 {% if product.status == 'needs_attention' %}
 <section class="panel review-panel" aria-label="配置变更确认">
@@ -15,7 +16,15 @@
 {% endif %}
 <div class="detail-grid">
   <section class="panel"><div class="eyebrow">当前报价</div>{% if history %}<div class="hero-price">{{ '$' if history[0].currency == 'USD' else history[0].currency ~ ' ' }}{{ '%.2f' | format(history[0].price_minor / 100) }}</div><p class="muted">{{ history[0].availability }} · 最近记录 {{ history[0].observed_at | beijing }} 北京时间</p>{% else %}<div class="hero-price">—</div><p class="muted">尚无可信价格</p>{% endif %}<a href="{{ product.canonical_url or product.requested_url }}" target="_blank" rel="noopener noreferrer" class="link">打开原商品页 ↗</a></section>
-  <section class="panel"><div class="eyebrow">监控设置</div><p class="muted">自动检查：{{ '每天 ' ~ check_time ~ ' · 北京时间' if check_time else '未设置时间' }}</p><form action="/products/{{ product.id }}/settings" method="post" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>目标价格 · {{ history[0].currency if history else 'USD' }}<input type="number" min="0" step="0.01" name="target_price" value="{{ '%.2f' | format(product.target_price_minor / 100) if product.target_price_minor is not none else '' }}" placeholder="可留空"></label><label>通知方式<select name="notify_mode"><option value="changes" {% if product.notify_mode == 'changes' %}selected{% endif %}>仅变化时</option><option value="target_or_change" {% if product.notify_mode == 'target_or_change' %}selected{% endif %}>变化及目标价</option></select></label><button type="submit" class="button">保存设置</button></form></section>
+  <section class="panel"><div class="eyebrow">监控设置</div><p class="muted">检查时间：{{ '每天 ' ~ check_time ~ ' · 北京时间' if check_time else '未设置时间' }}</p>
+    {% if product.status in ['active', 'paused'] %}
+    <form action="/products/{{ product.id }}/pause" method="post" class="detail-schedule-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="detail">
+      {{ time_columns(check_time) }}
+      <div class="detail-schedule-actions"><button class="button" type="submit" formaction="/products/{{ product.id }}/check-time">保存时间</button><span>自动检查</span><button class="card-control auto-switch" type="submit" role="switch" aria-checked="{{ 'true' if product.status == 'active' else 'false' }}" aria-label="自动检查" title="{{ '关闭自动检查' if product.status == 'active' else '开启自动检查' }}" formnovalidate><span class="switch-knob"></span></button></div>
+    </form>
+    {% else %}<p class="muted">{{ '配置待确认，暂不能自动检查' if product.status == 'needs_attention' else '商品已归档' }}</p>{% endif %}
+    <form action="/products/{{ product.id }}/settings" method="post" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>目标价格 · {{ history[0].currency if history else 'USD' }}<input type="number" min="0" step="0.01" name="target_price" value="{{ '%.2f' | format(product.target_price_minor / 100) if product.target_price_minor is not none else '' }}" placeholder="可留空"></label><label>通知方式<select name="notify_mode"><option value="changes" {% if product.notify_mode == 'changes' %}selected{% endif %}>仅变化时</option><option value="target_or_change" {% if product.notify_mode == 'target_or_change' %}selected{% endif %}>变化及目标价</option></select></label><button type="submit" class="button">保存设置</button></form></section>
 </div>
 <section class="panel history"><div class="section-heading"><h2>价格走势图</h2></div>
 {% if chart_points %}
@@ -29,7 +38,6 @@
 <section class="panel history"><div class="section-heading"><h2>价格记录</h2><a class="link" href="/products/{{ product.id }}/history.csv">导出 CSV ↗</a></div>{% if history %}<div class="table-wrap"><table><thead><tr><th>北京时间</th><th>价格</th><th>库存</th></tr></thead><tbody>{% for row in history %}<tr><td>{{ row.observed_at | beijing }}</td><td>{{ '$' if row.currency == 'USD' else row.currency ~ ' ' }}{{ '%.2f' | format(row.price_minor / 100) }}</td><td>{{ row.availability }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">还没有记录</p>{% endif %}</section>
 <div class="bottom-actions">
 {% if product.status != 'archived' %}
-  {% if product.status in ['active', 'paused'] %}<form action="/products/{{ product.id }}/pause" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit" {% if product.status == 'paused' and not check_time %}disabled{% endif %}>{{ '开启自动检查' if product.status == 'paused' else '关闭自动检查' }}</button></form>{% endif %}
   <form action="/products/{{ product.id }}/archive" method="post" data-confirm="移除这个商品？历史记录会保留。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button subtle" type="submit">移除商品</button></form>
 {% else %}
   <form action="/products/{{ product.id }}/restore" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button" type="submit">恢复为暂停</button></form><a class="button subtle" href="/products/{{ product.id }}/delete">永久删除</a>

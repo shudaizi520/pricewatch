@@ -4,12 +4,18 @@ document.querySelectorAll('form[data-confirm]').forEach(form => {
   });
 });
 document.querySelectorAll('.card-time-picker').forEach(picker => {
-  const input = picker.querySelector('input[type="time"]');
+  const hour = picker.querySelector('select[name="check_hour"]');
+  const minute = picker.querySelector('select[name="check_minute"]');
+  function restoreSavedTime() {
+    const saved = picker.dataset.savedTime || '';
+    hour.value = saved ? saved.slice(0, 2) : '';
+    minute.value = saved ? saved.slice(3, 5) : '';
+  }
   picker.addEventListener('toggle', () => {
-    if (!picker.open) input.value = picker.dataset.savedTime;
+    if (!picker.open) restoreSavedTime();
   });
   picker.querySelector('[data-cancel-time]').addEventListener('click', () => {
-    input.value = picker.dataset.savedTime;
+    restoreSavedTime();
     picker.open = false;
   });
 });
