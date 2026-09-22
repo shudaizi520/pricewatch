@@ -23,9 +23,8 @@ DELL_READY_SCRIPT = r"""() => {
     .filter(card => card.querySelector('.price.scoprice')?.textContent.trim() === 'Selected')
     .map(card => card.querySelector('[data-test-id="option-title"]')?.textContent.trim() || '');
   const has = pattern => selected.some(title => pattern.test(title));
-  if (!has(/Core\s*Ultra|Ryzen/i) || !has(/RTX\W*\d{4}|Radeon/i) ||
-      !has(/\d+\s*GB.*\bDDR/i) || !has(/\d+\s*TB.*(?:SSD|M\.2)/i) ||
-      !has(/\d{2}\s*(?:"|″|inch)/i)) return false;
+  if (!has(/Core\s*(?:Ultra|i[3579])|Ryzen/i) || !has(/RTX\W*\d{4}|Radeon/i) ||
+      !has(/\d+\s*GB.*\bDDR/i) || !has(/\d+\s*(?:TB|GB).*(?:SSD|M\.2)/i)) return false;
   const products = [...document.querySelectorAll('script[type="application/ld+json"]')]
     .flatMap(node => {
       try {
@@ -169,7 +168,7 @@ class BrowserFetcher:
                     if (
                         host in {"www.dell.com", "dell.com"}
                         and url.path.startswith("/en-us/shop/")
-                        and "alienware18area51aa18250" in url.path
+                        and "/spd/alienware" in url.path
                     ):
                         try:
                             await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)

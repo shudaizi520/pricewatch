@@ -224,6 +224,9 @@ async def test_us_dell_browser_uses_configured_upstream_socks(monkeypatch):
         async def goto(self, *_args, **_kwargs):
             return type("Response", (), {"status": 200})()
 
+        async def wait_for_function(self, *_args, **_kwargs):
+            return None
+
         async def content(self):
             return "<html><body>Dell Price $3,999.99</body></html>"
 
@@ -357,6 +360,7 @@ async def test_failed_dell_option_reports_configure_http_status_without_leaking_
         "https://www.dell.com/en-us/shop/laptop-computers/spd/"
         "alienware18area51aa18250/aa18250_reg_01",
         "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250",
+        "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example",
     ],
 )
 async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch, dell_url):
@@ -409,15 +413,15 @@ async def test_dell_page_does_not_capture_unselected_configuration(monkeypatch, 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "desktop_url",
+    "ungated_url",
     [
-        "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example",
+        "https://www.dell.com/en-us/shop/laptops/spd/dell-xps-13/example",
         "https://www.dell.com/zh-cn/shop/dell-laptops/spd/alienware18area51aa18250/aa18250_cn_01",
     ],
 )
-async def test_other_dell_product_does_not_require_area_51_option_grid(monkeypatch, desktop_url):
+async def test_other_dell_pages_do_not_require_alienware_configuration(monkeypatch, ungated_url):
     class FakePage:
-        url = desktop_url
+        url = ungated_url
 
         async def route(self, *_):
             pass
@@ -426,7 +430,7 @@ async def test_other_dell_product_does_not_require_area_51_option_grid(monkeypat
             return type("Response", (), {"status": 200})()
 
         async def wait_for_function(self, *_args, **_kwargs):
-            raise AssertionError("Area-51 readiness rule must not apply to a desktop")
+            raise AssertionError("Alienware readiness rule must not apply to other Dell pages")
 
         async def content(self):
             return "<html><h1>Alienware Aurora Desktop</h1></html>"
@@ -457,7 +461,7 @@ async def test_other_dell_product_does_not_require_area_51_option_grid(monkeypat
             pass
 
     monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
-    page = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(URL(desktop_url))
+    page = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(URL(ungated_url))
     assert b"Alienware Aurora Desktop" in page.body
 
 

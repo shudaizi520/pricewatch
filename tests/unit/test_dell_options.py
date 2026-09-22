@@ -162,26 +162,32 @@ async def test_confirmed_same_price_keyboard_is_valid():
 
 
 @pytest.mark.anyio
-async def test_keyboard_switch_waits_for_dell_quote_response(monkeypatch):
+@pytest.mark.parametrize("group", ["Keyboard", "Graphics Card"])
+@pytest.mark.parametrize("request_belongs_to_click", [True, False])
+@pytest.mark.parametrize("option_matches", [True, False])
+@pytest.mark.parametrize("option_id_present", [True, False])
+async def test_same_price_switch_requires_its_own_dell_quote(
+    monkeypatch, group, request_belongs_to_click, option_matches, option_id_present
+):
     from pricewatch.fetching import dell_options
+
+    class Request:
+        url = "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"
+
+        option_value = (
+            "OPTION-NEW" if option_matches else "OPTION-OLD"
+        ) if option_id_present else ("CherryMX" if option_matches else "Standard")
+        post_data = json.dumps({"option": option_value})
 
     class Response:
         url = "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"
         status = 200
 
+        def __init__(self, request):
+            self.request = request
+
         async def finished(self):
             return None
-
-    class QuoteContext:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        @property
-        async def value(self):
-            return Response()
 
     class Locator:
         def __init__(self, page):
@@ -199,8 +205,17 @@ async def test_keyboard_switch_waits_for_dell_quote_response(monkeypatch):
         async def inner_text(self):
             return "CherryMX"
 
+        async def get_attribute(self, name):
+            assert name == "data-option-id"
+            return "OPTION-NEW" if option_id_present else None
+
         async def click(self):
             self.page.selected = "CherryMX"
+            request = Request()
+            if request_belongs_to_click and (callback := self.page.listeners.get("request")):
+                callback(request)
+            if callback := self.page.listeners.get("response"):
+                callback(Response(request))
 
         async def is_visible(self):
             return False
@@ -214,8 +229,11 @@ async def test_keyboard_switch_waits_for_dell_quote_response(monkeypatch):
     class Page:
         selected = "Standard"
 
+        def __init__(self):
+            self.listeners = {}
+
         async def content(self):
-            return json.dumps({"Keyboard": self.selected})
+            return json.dumps({group: self.selected})
 
         async def evaluate(self, _script):
             return "Dell Price $3,999.99"
@@ -226,16 +244,22 @@ async def test_keyboard_switch_waits_for_dell_quote_response(monkeypatch):
         def get_by_role(self, *_args, **_kwargs):
             return Locator(self)
 
-        def expect_response(self, predicate, timeout):
-            assert predicate(Response())
-            return QuoteContext()
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        def remove_listener(self, name, _callback):
+            self.listeners.pop(name, None)
 
     monkeypatch.setattr(
-        dell_options, "read_catalog", lambda _page: _async_value({"Keyboard": ["CherryMX"]})
+        dell_options, "read_catalog", lambda _page: _async_value({group: ["CherryMX"]})
     )
     monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
-    result = await apply_selection(Page(), {"Keyboard": "CherryMX"})
-    assert result.price_minor == 399999
+    if request_belongs_to_click and option_matches:
+        result = await apply_selection(Page(), {group: "CherryMX"})
+        assert result.price_minor == 399999
+    else:
+        with pytest.raises(ValueError, match="价格未更新"):
+            await apply_selection(Page(), {group: "CherryMX"})
 
 
 async def _async_value(value):
@@ -308,7 +332,8 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
     async def catalog(_page):
         return {group: [label] for group, label in labels.items()}
 
-    async def quote(page, recipe, baseline_price, changed):
+    async def quote(page, recipe, baseline_price, changed, quote_responses):
+        assert quote_responses == []
         settled.append((dict(recipe), baseline_price, changed))
         page.price = 509999 if len(settled) == 1 else 519999
         return ConfiguredOffer(dict(page.selected), page.price)
@@ -325,7 +350,7 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_changed_option_waits_for_dell_interaction_before_click(monkeypatch):
+async def test_changed_option_clicks_without_a_fixed_fifteen_second_delay(monkeypatch):
     from pricewatch.fetching import dell_options
 
     class Locator:
@@ -354,7 +379,7 @@ async def test_changed_option_waits_for_dell_interaction_before_click(monkeypatc
             return False
 
         async def click(self):
-            assert self.page.elapsed_ms >= 15000, "clicked before Dell interaction was ready"
+            assert self.page.elapsed_ms == 0, "actionable option must not wait a fixed 15 seconds"
             self.page.selected = "RTX 5090"
 
     class Page:
@@ -376,7 +401,8 @@ async def test_changed_option_waits_for_dell_interaction_before_click(monkeypatc
     async def catalog(_page):
         return {"Graphics Card": ["RTX 5070", "RTX 5090"]}
 
-    async def settled(page, _recipe, _baseline_price, changed):
+    async def settled(page, _recipe, _baseline_price, changed, quote_responses):
+        assert quote_responses == []
         assert changed
         return ConfiguredOffer({"Graphics Card": page.selected}, 509999)
 
@@ -386,6 +412,83 @@ async def test_changed_option_waits_for_dell_interaction_before_click(monkeypatc
 
     result = await apply_selection(Page(), {"Graphics Card": "RTX 5090"})
     assert result.selected["Graphics Card"] == "RTX 5090"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("request_delay_polls", [0, 11])
+async def test_inflight_dell_quote_is_not_triggered_twice(monkeypatch, request_delay_polls):
+    from pricewatch.fetching import dell_options
+
+    class Locator:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        def nth(self, _index):
+            return self
+
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return "RTX 5090"
+
+        async def is_visible(self):
+            return False
+
+        async def click(self):
+            self.page.clicks += 1
+            if request_delay_polls == 0 and (callback := self.page.listeners.get("request")):
+                callback(
+                    type("Request", (), {"url": "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"})()
+                )
+
+    class Page:
+        def __init__(self):
+            self.clicks = 0
+            self.listeners = {}
+            self.waits = 0
+
+        async def content(self):
+            return json.dumps({"Graphics Card": "RTX 5070"})
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            self.waits += 1
+            if (
+                self.waits == request_delay_polls
+                and request_delay_polls
+                and (callback := self.listeners.get("request"))
+            ):
+                callback(
+                    type("Request", (), {"url": "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"})()
+                )
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Locator(self)
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+    async def catalog(_page):
+        return {"Graphics Card": ["RTX 5070", "RTX 5090"]}
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    page = Page()
+    with pytest.raises(ValueError, match="没有完成配置切换"):
+        await apply_selection(page, {"Graphics Card": "RTX 5090"})
+    assert page.clicks == 1
 
 
 @pytest.mark.anyio
@@ -456,7 +559,8 @@ async def test_late_spec_dependency_dialog_is_accepted(monkeypatch):
     async def catalog(_page):
         return {"Graphics Card": ["RTX 5090"]}
 
-    async def quote(page, _recipe, _baseline, changed):
+    async def quote(page, _recipe, _baseline, changed, quote_responses):
+        assert quote_responses == []
         assert changed
         return ConfiguredOffer({"Graphics Card": page.selected}, 509999)
 

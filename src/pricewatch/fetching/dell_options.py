@@ -4,7 +4,7 @@ import re
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from playwright.async_api import Locator, Page
+from playwright.async_api import Locator, Page, Response
 
 from pricewatch.fetching.types import ConfiguredOffer
 
@@ -90,6 +90,7 @@ async def settled_offer(
     baseline_price: int | None,
     changed: bool,
     quote_confirmed: bool = False,
+    quote_responses: list[Response] | None = None,
 ) -> ConfiguredOffer:
     last_price: int | None = None
     stable_reads = 0
@@ -101,6 +102,9 @@ async def settled_offer(
             price = active_price_minor(await page.evaluate("document.body.innerText"))
         except ValueError:
             price = None
+        if changed and not quote_confirmed and price == baseline_price and quote_responses:
+            await quote_responses[-1].finished()
+            quote_confirmed = True
         # Dell can mark the new option selected before its asynchronous quote arrives.
         if changed and not quote_confirmed and price == baseline_price:
             price = None
@@ -118,7 +122,6 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
     if not recipe:
         raise ValueError("请选择至少一个戴尔配置")
     last_offer: ConfiguredOffer | None = None
-    interaction_waited = False
     for group, label in recipe.items():
         catalog = await read_catalog(page)
         if label not in catalog.get(group, []):
@@ -137,10 +140,9 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
                 matching.append(wrapper)
         if len(matching) != 1:
             raise ValueError(f"戴尔配置定位失败: {group} / {label}")
-        if not interaction_waited:
-            # Dell can render the default options before its click handlers are ready.
-            await page.wait_for_timeout(15000)
-            interaction_waited = True
+        button = matching[0].locator('[role="button"]')
+        get_attribute = getattr(button, "get_attribute", None)
+        option_id = await get_attribute("data-option-id") if callable(get_attribute) else None
         accept = (
             page.get_by_role("dialog")
             .filter(has_text="Spec changes required")
@@ -148,12 +150,12 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
         )
 
         async def choose_option(
-            matched: Locator = matching[0],
+            button: Locator = button,
             dialog: Locator = accept,
             option_group: str = group,
             option_label: str = label,
         ) -> None:
-            await matched.locator('[role="button"]').click()
+            await button.click()
             for _ in range(40):
                 if await dialog.is_visible():
                     await dialog.click()
@@ -162,30 +164,49 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
                 await page.wait_for_timeout(500)
             raise ValueError(f"戴尔没有完成配置切换: {option_group} / {option_label}")
 
-        quote_confirmed = False
-        if group == "Keyboard":
-            async with page.expect_response(
-                lambda response: (
-                    "/shopapi/unifiedpd/configure/" in response.url and response.status == 200
-                ),
-                timeout=20000,
-            ) as response_info:
-                await choose_option()
-            quote_response = await response_info.value
-            await quote_response.finished()
-            quote_confirmed = True
-        else:
+        quote_responses: list[Response] = []
+        configure_requests: list[object] = []
+
+        def record_request(request: object, requests: list[object] = configure_requests) -> None:
+            if "/shopapi/unifiedpd/configure/" in str(getattr(request, "url", "")):
+                requests.append(request)
+
+        def record_response(
+            response: Response,
+            responses: list[Response] = quote_responses,
+            requests: list[object] = configure_requests,
+            selected_option_id: str | None = option_id,
+            selected_label: str = label,
+        ) -> None:
+            if (
+                "/shopapi/unifiedpd/configure/" not in response.url
+                or response.status != 200
+                or not any(response.request is request for request in requests)
+            ):
+                return
+            marker = selected_option_id or selected_label
+            request_data = f"{response.request.url} {response.request.post_data or ''}"
+            if re.search(
+                rf"(?<![A-Za-z0-9]){re.escape(marker)}(?![A-Za-z0-9])",
+                request_data,
+            ):
+                responses.append(response)
+
+        on = getattr(page, "on", None)
+        if callable(on):
+            on("request", record_request)
+            on("response", record_response)
+        try:
             await choose_option()
-        if quote_confirmed:
             last_offer = await settled_offer(
-                page,
-                {group: label},
-                baseline_price,
-                changed=True,
-                quote_confirmed=True,
+                page, {group: label}, baseline_price, changed=True,
+                quote_responses=quote_responses,
             )
-        else:
-            last_offer = await settled_offer(page, {group: label}, baseline_price, changed=True)
+        finally:
+            remove_listener = getattr(page, "remove_listener", None)
+            if callable(remove_listener) and callable(on):
+                remove_listener("request", record_request)
+                remove_listener("response", record_response)
     if last_offer is None:
         return await settled_offer(page, recipe, baseline_price=None, changed=False)
     if any(last_offer.selected.get(group) != label for group, label in recipe.items()):
