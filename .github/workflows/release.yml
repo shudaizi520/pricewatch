@@ -12,6 +12,9 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     environment: production
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,12 +24,20 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           SIGNING_PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
         run: |
+          test "$GITHUB_REF" = 'refs/heads/main'
           [[ "$RELEASE_VERSION" =~ ^v[1-9][0-9]*\.[0-9]+\.[0-9]+$ ]]
           test -n "$SIGNING_PUBLIC_KEY"
           printf '%s' "$SIGNING_PUBLIC_KEY" | gpg --batch --import
           git fetch origin "refs/tags/$RELEASE_VERSION:refs/tags/$RELEASE_VERSION"
           git verify-tag "$RELEASE_VERSION"
           test "$(git rev-list -n 1 "$RELEASE_VERSION")" = "$(git rev-parse HEAD)"
+      - name: Validate source and installer version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          test "$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')" = "$version"
+          grep -Fx "    image: ghcr.io/${GITHUB_REPOSITORY,,}:$version" compose.ghcr.yml
       - name: Prepare versioned tags
         id: tags
         env:
@@ -57,3 +68,39 @@ jobs:
             ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.minor }}
             ${{ steps.tags.outputs.image }}:${{ steps.tags.outputs.major }}
             ${{ steps.tags.outputs.image }}:latest
+  release:
+    needs: publish
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          release="repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_VERSION"
+          if gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if ! gh api "$release" --jq '.assets[].name' | grep -Fxq 'compose.ghcr.yml'; then
+              gh release upload "$RELEASE_VERSION" compose.ghcr.yml --repo "$GITHUB_REPOSITORY"
+            fi
+            if test "$(gh api "$release" --jq '.draft')" = 'true'; then
+              gh release edit "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+            fi
+          else
+            gh release create "$RELEASE_VERSION" compose.ghcr.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "PriceWatch ${RELEASE_VERSION#v}" \
+              --generate-notes \
+              --latest \
+              --notes "Docker 镜像：ghcr.io/${GITHUB_REPOSITORY,,}:${RELEASE_VERSION#v}。首次安装可下载下方附带的 compose.ghcr.yml；首次打开会引导创建管理员账号。"
+          fi
+          if test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>/dev/null || true)" != "$RELEASE_VERSION"; then
+            gh release edit "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --latest
+          fi
+          test "$(gh api "$release" --jq '.draft')" = 'false'
+          gh api "$release" --jq '.assets[].name' | grep -Fx 'compose.ghcr.yml'
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" = "$RELEASE_VERSION"
