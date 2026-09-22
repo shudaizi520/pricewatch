@@ -24,6 +24,7 @@ async def admin_client(client):
         data={
             "username": "owner",
             "password": "VeryStrongSecret123!",
+            "confirm_password": "VeryStrongSecret123!",
             "csrf_token": csrf(page.text),
         },
     )

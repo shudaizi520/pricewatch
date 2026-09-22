@@ -18,6 +18,7 @@ async def test_save_feishu_encrypted_and_status_redacts_secret(client):
         data={
             "username": "owner",
             "password": "VeryStrongSecret123!",
+            "confirm_password": "VeryStrongSecret123!",
             "csrf_token": token(page.text),
         },
     )
