@@ -1,6 +1,7 @@
 """One-process, one-runner schedule with per-product Beijing-local times."""
 
 import asyncio
+import logging
 import re
 from contextlib import suppress
 from dataclasses import dataclass
@@ -12,10 +13,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[impo
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from pricewatch.db.models import Product, Setting
+from pricewatch.db.models import CheckRun, Product, Setting
 from pricewatch.services.checks import CheckTrigger
 
 _BEIJING = ZoneInfo("Asia/Shanghai")
+_LOGGER = logging.getLogger(__name__)
 
 
 def check_time_key(product_id: int) -> str:
@@ -132,10 +134,50 @@ class SchedulerService:
         for identifier in identifiers:
             self.request_check(identifier, "scheduled")
 
+    def _latest_run_id(self, product_id: int) -> int | None:
+        with self.factory() as session:
+            return session.scalar(
+                select(CheckRun.id)
+                .where(CheckRun.product_id == product_id)
+                .order_by(CheckRun.id.desc())
+                .limit(1)
+            )
+
+    def _record_unhandled_failure(
+        self, product_id: int, trigger: CheckTrigger, previous_run_id: int | None,
+        error: Exception,
+    ) -> None:
+        with self.factory.begin() as session:
+            product = session.get(Product, product_id)
+            if product is None:
+                return
+            latest_run_id = session.scalar(
+                select(CheckRun.id)
+                .where(CheckRun.product_id == product_id)
+                .order_by(CheckRun.id.desc())
+                .limit(1)
+            )
+            if latest_run_id != previous_run_id:
+                return
+            now = datetime.now(UTC)
+            product.consecutive_failures += 1
+            product.last_checked_at = now
+            session.add(
+                CheckRun(
+                    product_id=product_id,
+                    trigger=trigger,
+                    outcome="failed",
+                    error_category=type(error).__name__,
+                    created_at=now,
+                )
+            )
+
     async def _run(self) -> None:
         while True:
             product_id, trigger = await self.queue.get()
             job = self.pending[product_id]
+            previous_run_id: int | None = None
+            actual_trigger: CheckTrigger = trigger
             try:
                 if trigger == "scheduled" and not job.manual_requested:
                     with self.factory() as session:
@@ -145,14 +187,22 @@ class SchedulerService:
                             continue
                 if self.checker is None:
                     raise RuntimeError("Check service is not configured")
-                result = await self.checker.check_product(
-                    product_id, "manual" if job.manual_requested else trigger
-                )
+                previous_run_id = self._latest_run_id(product_id)
+                actual_trigger = "manual" if job.manual_requested else trigger
+                result = await self.checker.check_product(product_id, actual_trigger)
                 if not job.future.done():
                     job.future.set_result(result)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
+                try:
+                    self._record_unhandled_failure(
+                        product_id, actual_trigger, previous_run_id, error
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        "Unable to record unexpected check failure for product %s", product_id
+                    )
                 if not job.future.done():
                     job.future.set_exception(error)
             finally:

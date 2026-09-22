@@ -8,13 +8,13 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from pricewatch.adapters.base import ExtractionError
-from pricewatch.db.models import Administrator, Observation, Product, Setting
+from pricewatch.db.models import Administrator, CheckRun, Observation, Product, Setting
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import Money, ProductSnapshot
 from pricewatch.fetching.dell_options import catalog_from_html
@@ -59,6 +59,44 @@ def _sparkline(observations: list[Observation]) -> str:
 
 def _display_price(currency: str, minor: int) -> str:
     return f"{'$' if currency == 'USD' else currency + ' '}{minor / 100:.2f}"
+
+
+def _latest_check(session: Session, product_id: int) -> CheckRun | None:
+    return session.scalar(
+        select(CheckRun)
+        .where(CheckRun.product_id == product_id)
+        .order_by(CheckRun.created_at.desc(), CheckRun.id.desc())
+        .limit(1)
+    )
+
+
+def _check_status(run: CheckRun | None, pending: bool) -> dict[str, object]:
+    if pending:
+        return {
+            "pending": True,
+            "run_id": run.id if run else None,
+            "status_kind": "running",
+            "status_text": "正在检查…",
+        }
+    if run is None:
+        return {
+            "pending": False,
+            "run_id": None,
+            "status_kind": "idle",
+            "status_text": "尚无检查记录",
+        }
+    trigger = {"manual": "手动", "scheduled": "自动", "initial": "首次"}.get(
+        run.trigger, ""
+    )
+    outcome = {"ok": "成功", "failed": "失败", "needs_attention": "需确认"}.get(
+        run.outcome, "未完成"
+    )
+    return {
+        "pending": False,
+        "run_id": run.id,
+        "status_kind": run.outcome,
+        "status_text": f"{trigger}检查{outcome} · {beijing_label(run.created_at)} 北京时间",
+    }
 
 
 def _chart_points(observations: list[Observation]) -> list[dict[str, object]]:
@@ -117,6 +155,10 @@ async def dashboard(request: Request) -> Response:
                     else "—",
                     "currency": latest.currency if latest else "",
                     "check_time": check_time_setting.value_text if check_time_setting else None,
+                    "check_state": _check_status(
+                        _latest_check(session, product.id),
+                        product.id in request.app.state.scheduler.pending,
+                    ),
                 }
             )
     return templates.TemplateResponse(
@@ -124,6 +166,49 @@ async def dashboard(request: Request) -> Response:
         name="dashboard.html",
         context=_context(request, cards=cards),
     )
+
+
+@router.get("/check-status")
+async def check_status(request: Request) -> JSONResponse:
+    require_admin(request)
+    products: dict[str, dict[str, object]] = {}
+    with request.app.state.session_factory() as session:
+        product_ids = session.scalars(
+            select(Product.id).where(Product.status != "archived")
+        ).all()
+        for product_id in product_ids:
+            observations = session.scalars(
+                select(Observation)
+                .where(Observation.product_id == product_id, Observation.trusted.is_(True))
+                .order_by(Observation.observed_at.desc(), Observation.id.desc())
+                .limit(30)
+            ).all()
+            latest = observations[0] if observations else None
+            lowest = (
+                session.scalar(
+                    select(func.min(Observation.price_minor)).where(
+                        Observation.product_id == product_id,
+                        Observation.trusted.is_(True),
+                        Observation.currency == latest.currency,
+                    )
+                )
+                if latest
+                else None
+            )
+            products[str(product_id)] = {
+                **_check_status(
+                    _latest_check(session, product_id),
+                    product_id in request.app.state.scheduler.pending,
+                ),
+                "price": _display_price(latest.currency, latest.price_minor)
+                if latest
+                else "—",
+                "lowest": f"最低 {_display_price(latest.currency, lowest)}"
+                if latest and lowest is not None
+                else "尚无价格记录",
+                "sparkline": _sparkline(observations),
+            }
+    return JSONResponse({"products": products}, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/products/new", response_class=HTMLResponse)
@@ -354,6 +439,8 @@ async def manual_check(
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
     request.app.state.scheduler.request_check(product_id, "manual")
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"pending": True}, status_code=202)
     destination = "/" if return_to == "dashboard" else f"/products/{product_id}"
     return RedirectResponse(destination, status_code=303)
 

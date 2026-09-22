@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from pricewatch.db.base import Base
-from pricewatch.db.models import Product, Setting
+from pricewatch.db.models import CheckRun, Product, Setting
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.services.scheduler import SchedulerService, next_due
 
@@ -142,6 +142,78 @@ async def test_manual_click_still_runs_when_it_coalesces_with_disabled_scheduled
         await blocker.future
         assert await asyncio.wait_for(manual.future, 1) == identifier
         assert checker.calls == [(99, "manual"), (identifier, "manual")]
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_unexpected_worker_error_records_failed_scheduled_check(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        item = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(item)
+        session.flush()
+        product_id = item.id
+        session.add(Setting(key=f"product_check_time:{product_id}", value_text="08:00"))
+        session.add(CheckRun(product_id=product_id, trigger="initial", outcome="ok"))
+
+    class BrokenChecker:
+        async def check_product(self, product_id, trigger):
+            raise RuntimeError("unexpected internal failure")
+
+    scheduler = SchedulerService(factory, BrokenChecker())
+    scheduler.start()
+    try:
+        job = scheduler.request_check(product_id, "scheduled")
+        with pytest.raises(RuntimeError, match="unexpected internal failure"):
+            await asyncio.wait_for(job.future, 1)
+        with factory() as session:
+            runs = (
+                session.query(CheckRun)
+                .filter_by(product_id=product_id)
+                .order_by(CheckRun.id)
+                .all()
+            )
+            product = session.get(Product, product_id)
+            assert [(run.trigger, run.outcome) for run in runs] == [
+                ("initial", "ok"),
+                ("scheduled", "failed"),
+            ]
+            assert runs[-1].error_category == "RuntimeError"
+            assert runs[-1].error_message is None
+            assert product is not None and product.last_checked_at is not None
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_worker_does_not_duplicate_run_if_checker_recorded_one_before_error(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        item = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(item)
+        session.flush()
+        product_id = item.id
+
+    class PartlyCompletedChecker:
+        async def check_product(self, product_id, trigger):
+            with factory.begin() as session:
+                session.add(CheckRun(product_id=product_id, trigger=trigger, outcome="ok"))
+            raise RuntimeError("notification failed after price was stored")
+
+    scheduler = SchedulerService(factory, PartlyCompletedChecker())
+    scheduler.start()
+    try:
+        job = scheduler.request_check(product_id, "manual")
+        with pytest.raises(RuntimeError, match="notification failed"):
+            await asyncio.wait_for(job.future, 1)
+        with factory() as session:
+            runs = session.query(CheckRun).filter_by(product_id=product_id).all()
+            assert [(run.trigger, run.outcome) for run in runs] == [("manual", "ok")]
     finally:
         await scheduler.stop()
         engine.dispose()

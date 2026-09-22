@@ -33,6 +33,126 @@ if (productGrid) {
   cards.forEach(card => card.querySelector('.card-select').addEventListener('click', () => selectCard(card)));
   const saved = localStorage.getItem('pricewatch-selected-product');
   selectCard(cards.find(card => card.dataset.productId === saved) || cards[0]);
+
+  const cardById = new Map(cards.map(card => [card.dataset.productId, card]));
+  let pollTimer;
+  let pollInFlight = false;
+  let statusGeneration = 0;
+  function setChecking(card, checking) {
+    const button = card.querySelector('.manual-refresh');
+    button.disabled = checking;
+    button.classList.toggle('is-checking', checking);
+    button.setAttribute('aria-busy', String(checking));
+  }
+  function showCheckStatus(card, message, kind) {
+    const status = card.querySelector('.card-check-status');
+    status.textContent = message;
+    status.dataset.kind = kind;
+  }
+  function updateCard(card, state) {
+    const oldRunId = card.dataset.runId || '';
+    const newRunId = state.run_id == null ? '' : String(state.run_id);
+    if (card.dataset.awaitingRun === 'true' && !state.pending && newRunId === oldRunId) {
+      if (card.dataset.requestAccepted === 'true') {
+        card.dataset.awaitingRun = '';
+        card.dataset.requestAccepted = '';
+        setChecking(card, false);
+        showCheckStatus(card, '检查未完成，请查看状态页', 'failed');
+      } else if (card.dataset.requestAccepted === 'unknown') {
+        card.dataset.awaitingRun = '';
+        card.dataset.requestAccepted = '';
+        setChecking(card, false);
+        showCheckStatus(card, '未能确认检查已提交，请重试', 'failed');
+      }
+      return;
+    }
+    if (!state.pending) {
+      card.dataset.awaitingRun = '';
+      card.dataset.requestAccepted = '';
+    }
+    card.dataset.runId = newRunId;
+    setChecking(card, state.pending);
+    showCheckStatus(card, state.status_text, state.status_kind);
+    card.dataset.price = state.price;
+    card.querySelector('.price').textContent = state.price;
+    card.querySelector('.card-lowest').textContent = state.lowest;
+    card.querySelector('.sparkline polyline').setAttribute('points', state.sparkline);
+    if (card.querySelector('.card-select').getAttribute('aria-pressed') === 'true') {
+      document.querySelector('#selected-price').textContent = state.price;
+    }
+  }
+  function schedulePoll(delay) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => { void pollStatus(); }, delay);
+  }
+  async function pollStatus() {
+    if (document.visibilityState === 'hidden') {
+      schedulePoll(30000);
+      return;
+    }
+    if (pollInFlight) {
+      schedulePoll(1000);
+      return;
+    }
+    pollInFlight = true;
+    const generationAtStart = statusGeneration;
+    try {
+      const response = await fetch('/check-status', {
+        credentials: 'same-origin', cache: 'no-store', headers: {Accept: 'application/json'}
+      });
+      if (!response.ok) throw new Error('status unavailable');
+      const result = await response.json();
+      if (generationAtStart !== statusGeneration) {
+        schedulePoll(0);
+        return;
+      }
+      for (const [id, state] of Object.entries(result.products)) {
+        const card = cardById.get(id);
+        if (card) updateCard(card, state);
+      }
+      schedulePoll(cards.some(card => card.querySelector('.manual-refresh').disabled) ? 2000 : 30000);
+    } catch (_) {
+      cards.filter(card => card.dataset.awaitingRun === 'true').forEach(card => {
+        showCheckStatus(card, '状态暂不可用，正在重试…', 'running');
+      });
+      schedulePoll(15000);
+    } finally {
+      pollInFlight = false;
+    }
+  }
+  cards.forEach(card => {
+    const form = card.querySelector('form[data-manual-check]');
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (form.querySelector('.manual-refresh').disabled) return;
+      statusGeneration += 1;
+      card.dataset.awaitingRun = 'true';
+      card.dataset.requestAccepted = '';
+      setChecking(card, true);
+      showCheckStatus(card, '正在检查…', 'running');
+      try {
+        const response = await fetch(form.action, {
+          method: 'POST', credentials: 'same-origin',
+          headers: {Accept: 'application/json'}, body: new FormData(form)
+        });
+        if (response.status !== 202 || !(await response.json()).pending) {
+          throw new Error('check was not accepted');
+        }
+        card.dataset.requestAccepted = 'true';
+        statusGeneration += 1;
+        schedulePoll(0);
+      } catch (_) {
+        card.dataset.requestAccepted = 'unknown';
+        statusGeneration += 1;
+        showCheckStatus(card, '正在确认检查状态…', 'running');
+        schedulePoll(0);
+      }
+    });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') schedulePoll(0);
+  });
+  schedulePoll(0);
 }
 const backupForm = document.getElementById('backup-form');
 if (backupForm) {

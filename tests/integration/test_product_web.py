@@ -7,7 +7,7 @@ import pytest
 from bs4 import BeautifulSoup
 from sqlalchemy import func, select
 
-from pricewatch.db.models import Observation, Product, Setting
+from pricewatch.db.models import CheckRun, Observation, Product, Setting
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError
 
@@ -222,6 +222,166 @@ async def test_card_manual_refresh_works_without_auto_schedule(admin_client, mon
         f"/products/{product_id}/check", data={"csrf_token": csrf(page.text)}
     )
     assert response.status_code == 303
+    assert queued == [(product_id, "manual")]
+
+
+@pytest.mark.anyio
+async def test_card_shows_latest_failed_check_in_beijing_without_replacing_trusted_price(
+    admin_client,
+):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/x",
+            name="Alienware 18",
+            status="active",
+        )
+        session.add(product)
+        session.flush()
+        session.add(
+            Observation(
+                product_id=product.id,
+                currency="USD",
+                price_minor=679999,
+                availability="in_stock",
+                trusted=True,
+                observed_at=datetime(2026, 9, 21, 12, 0, tzinfo=UTC),
+            )
+        )
+        session.add(
+            CheckRun(
+                product_id=product.id,
+                trigger="scheduled",
+                outcome="failed",
+                error_category="AcquisitionError",
+                error_message="private diagnostic must not appear on card",
+                created_at=datetime(2026, 9, 22, 3, 29, tzinfo=UTC),
+            )
+        )
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    card = page.select_one(".product-card")
+    assert card.select_one(".card-check-status").get_text(" ", strip=True) == (
+        "自动检查失败 · 2026-09-22 11:29 北京时间"
+    )
+    assert "$6799.99" in card.get_text(" ", strip=True)
+    assert "private diagnostic" not in card.get_text(" ", strip=True)
+
+
+@pytest.mark.anyio
+async def test_check_status_reports_running_then_failed_and_keeps_previous_price(admin_client):
+    import asyncio
+
+    from pricewatch.services.scheduler import JobReference
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/en-us/shop/x"
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+        session.add(
+            Observation(
+                product_id=product_id,
+                currency="USD",
+                price_minor=679999,
+                availability="in_stock",
+                trusted=True,
+            )
+        )
+        session.add(
+            CheckRun(
+                product_id=product_id,
+                trigger="manual",
+                outcome="failed",
+                created_at=datetime(2026, 9, 22, 3, 29, tzinfo=UTC),
+            )
+        )
+    scheduler = app.state.scheduler
+    scheduler.pending[product_id] = JobReference(
+        product_id, asyncio.get_running_loop().create_future()
+    )
+    running = await admin_client.get("/check-status")
+    assert running.status_code == 200
+    assert running.json()["products"][str(product_id)]["pending"] is True
+    assert running.json()["products"][str(product_id)]["status_text"] == "正在检查…"
+    scheduler.pending.pop(product_id)
+    finished = (await admin_client.get("/check-status")).json()["products"][str(product_id)]
+    assert finished["pending"] is False
+    assert finished["status_text"] == "手动检查失败 · 2026-09-22 11:29 北京时间"
+    assert finished["price"] == "$6799.99"
+    assert finished["run_id"] is not None
+
+
+@pytest.mark.anyio
+async def test_check_status_returns_new_trusted_price_after_success(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/en-us/shop/x"
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+        for price, minute in [(679999, 0), (669999, 5)]:
+            session.add(
+                Observation(
+                    product_id=product_id,
+                    currency="USD",
+                    price_minor=price,
+                    availability="in_stock",
+                    trusted=True,
+                    observed_at=datetime(2026, 9, 22, 3, minute, tzinfo=UTC),
+                )
+            )
+        session.add(
+            CheckRun(
+                product_id=product_id,
+                trigger="scheduled",
+                outcome="ok",
+                created_at=datetime(2026, 9, 22, 3, 6, tzinfo=UTC),
+            )
+        )
+    state = (await admin_client.get("/check-status")).json()["products"][str(product_id)]
+    assert state["status_text"] == "自动检查成功 · 2026-09-22 11:06 北京时间"
+    assert state["price"] == "$6699.99"
+    assert state["lowest"] == "最低 $6699.99"
+    assert len(state["sparkline"].split()) == 2
+
+
+@pytest.mark.anyio
+async def test_check_status_requires_login(client):
+    response = await client.get("/check-status", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_manual_refresh_accepts_ajax_and_returns_queued_state(admin_client, monkeypatch):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/en-us/shop/x"
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+    queued = []
+    monkeypatch.setattr(
+        app.state.scheduler,
+        "request_check",
+        lambda product_id, trigger: queued.append((product_id, trigger)),
+    )
+    page = await admin_client.get("/")
+    response = await admin_client.post(
+        f"/products/{product_id}/check",
+        data={"csrf_token": csrf(page.text), "return_to": "dashboard"},
+        headers={"Accept": "application/json"},
+    )
+    assert response.status_code == 202
+    assert response.json()["pending"] is True
     assert queued == [(product_id, "manual")]
 
 

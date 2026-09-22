@@ -24,7 +24,32 @@
 
 .card-controls {
   gap: 7px;
+}
+
+.card-control-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  min-width: 0;
   margin-left: auto;
+}
+
+.card-check-status {
+  max-width: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.card-check-status[data-kind="failed"] {
+  color: #c23d3d;
+}
+
+.card-check-status[data-kind="ok"] {
+  color: var(--good);
 }
 
 .card-controls form {
@@ -55,6 +80,28 @@
 .card-control:hover,
 .check-time:hover {
   border-color: var(--brand);
+}
+
+.manual-refresh:disabled {
+  cursor: wait;
+  opacity: .8;
+}
+
+.refresh-glyph {
+  display: inline-block;
+  line-height: 1;
+}
+
+.manual-refresh.is-checking .refresh-glyph {
+  animation: check-spin .8s linear infinite;
+}
+
+@keyframes check-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .manual-refresh.is-checking .refresh-glyph { animation: none; }
 }
 
 .check-time {
