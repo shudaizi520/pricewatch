@@ -11,14 +11,16 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from pricewatch.adapters.base import ExtractionError
-from pricewatch.db.models import Administrator, Observation, Product
+from pricewatch.db.models import Administrator, Observation, Product, Setting
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import Money, ProductSnapshot
 from pricewatch.fetching.dell_options import catalog_from_html
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError, validate_public_url
+from pricewatch.services.scheduler import check_time_key, parse_check_time
 from pricewatch.web.configuration import configuration_rows, secondary_configuration_rows
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
 from pricewatch.web.timezone import beijing_label, beijing_time
@@ -86,6 +88,7 @@ async def dashboard(request: Request) -> Response:
         ).all()
         cards = []
         for product in products:
+            check_time_setting = session.get(Setting, check_time_key(product.id))
             observations = session.scalars(
                 select(Observation)
                 .where(Observation.product_id == product.id, Observation.trusted.is_(True))
@@ -113,6 +116,7 @@ async def dashboard(request: Request) -> Response:
                     if latest
                     else "—",
                     "currency": latest.currency if latest else "",
+                    "check_time": check_time_setting.value_text if check_time_setting else None,
                 }
             )
     return templates.TemplateResponse(
@@ -281,6 +285,7 @@ async def product_confirm(
             name=snapshot.name,
             sku=snapshot.identity.sku,
             dell_selection=recipe,
+            status="paused",
         )
         session.add(product)
         session.flush()
@@ -322,6 +327,8 @@ async def product_detail(request: Request, product_id: int) -> Response:
             .order_by(Observation.observed_at.desc(), Observation.id.desc())
             .limit(1)
         )
+        check_time_setting = session.get(Setting, check_time_key(product_id))
+        check_time = check_time_setting.value_text if check_time_setting else None
     return templates.TemplateResponse(
         request=request,
         name="product_detail.html",
@@ -332,18 +339,60 @@ async def product_detail(request: Request, product_id: int) -> Response:
             pending=pending,
             configuration_rows=configuration_rows(product.configuration, include_extras=True),
             chart_points=_chart_points(history),
+            check_time=check_time,
         ),
     )
 
 
 @router.post("/products/{product_id}/check")
 async def manual_check(
-    request: Request, product_id: int, submitted_csrf: str = Form(alias="csrf_token")
+    request: Request,
+    product_id: int,
+    return_to: str = Form("detail"),
+    submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
     request.app.state.scheduler.request_check(product_id, "manual")
-    return RedirectResponse(f"/products/{product_id}", status_code=303)
+    destination = "/" if return_to == "dashboard" else f"/products/{product_id}"
+    return RedirectResponse(destination, status_code=303)
+
+
+def _time_conflicts(session: Session, product_id: int, check_time: str) -> bool:
+    for active_id in session.scalars(
+        select(Product.id).where(Product.status == "active", Product.id != product_id)
+    ):
+        setting = session.get(Setting, check_time_key(active_id))
+        if setting is not None and setting.value_text == check_time:
+            return True
+    return False
+
+
+@router.post("/products/{product_id}/check-time")
+async def product_check_time(
+    request: Request,
+    product_id: int,
+    check_time: str = Form(),
+    submitted_csrf: str = Form(alias="csrf_token"),
+) -> Response:
+    verify_csrf(request, submitted_csrf)
+    _product(request, product_id)
+    try:
+        parse_check_time(check_time)
+    except ValueError:
+        return RedirectResponse("/?schedule_error=invalid", status_code=303)
+    with request.app.state.session_factory.begin() as session:
+        product = session.get(Product, product_id)
+        assert product is not None
+        if product.status == "active" and _time_conflicts(session, product_id, check_time):
+            return RedirectResponse("/?schedule_error=conflict", status_code=303)
+        setting = session.get(Setting, check_time_key(product_id))
+        if setting is None:
+            session.add(Setting(key=check_time_key(product_id), value_text=check_time))
+        else:
+            setting.value_text = check_time
+    request.app.state.scheduler.schedule_product(product_id)
+    return RedirectResponse("/", status_code=303)
 
 
 @router.post("/products/{product_id}/settings")
@@ -375,15 +424,30 @@ async def product_settings(
 
 @router.post("/products/{product_id}/pause")
 async def pause_product(
-    request: Request, product_id: int, submitted_csrf: str = Form(alias="csrf_token")
+    request: Request,
+    product_id: int,
+    return_to: str = Form("detail"),
+    submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
+    destination = "/" if return_to == "dashboard" else f"/products/{product_id}"
     with request.app.state.session_factory.begin() as session:
         product = session.get(Product, product_id)
         assert product is not None
-        product.status = "active" if product.status == "paused" else "paused"
-    return RedirectResponse(f"/products/{product_id}", status_code=303)
+        if product.status == "active":
+            product.status = "paused"
+        elif product.status == "paused":
+            setting = session.get(Setting, check_time_key(product_id))
+            if setting is None or not setting.value_text:
+                return RedirectResponse(f"{destination}?schedule_error=missing", status_code=303)
+            if _time_conflicts(session, product_id, setting.value_text):
+                return RedirectResponse(f"{destination}?schedule_error=conflict", status_code=303)
+            product.status = "active"
+        else:
+            raise HTTPException(409)
+    request.app.state.scheduler.schedule_product(product_id)
+    return RedirectResponse(destination, status_code=303)
 
 
 @router.post("/products/{product_id}/archive")
@@ -437,6 +501,9 @@ async def delete_product(
         raise HTTPException(400, "请先归档并输入 DELETE 确认")
     with request.app.state.session_factory.begin() as session:
         stored = session.get(Product, product_id)
+        setting = session.get(Setting, check_time_key(product_id))
+        if setting is not None:
+            session.delete(setting)
         session.delete(stored)
     return RedirectResponse("/", status_code=303)
 
@@ -487,12 +554,14 @@ async def confirm_configuration(
                 check_interval_hours=product.check_interval_hours,
                 last_checked_at=pending.observed_at,
                 last_success_at=pending.observed_at,
+                status="paused",
             )
             session.add(fresh)
             session.flush()
             pending.product_id = fresh.id
             pending.trusted = True
             product.status = "paused"
+            product.next_check_at = None
             target_product_id = fresh.id
             initial_event = DomainEvent(
                 fresh.id,
@@ -512,7 +581,8 @@ async def confirm_configuration(
                 pending_configuration.get("canonical_url") or product.canonical_url
             )
             product.last_success_at = pending.observed_at
-            product.status = "active"
+            product.status = "paused"
+            product.next_check_at = None
     if action == "separate":
         request.app.state.scheduler.schedule_product(target_product_id)
         if initial_event is not None:

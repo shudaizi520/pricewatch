@@ -3,29 +3,18 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 
 from pricewatch.db.models import CheckRun, Product
-from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
+from pricewatch.web.dependencies import csrf_token, require_admin
 from pricewatch.web.timezone import beijing_label
 
 router = APIRouter()
 templates = Jinja2Templates(directory=Path(__file__).parents[1] / "templates")
 templates.env.filters["beijing"] = beijing_label
-
-
-@router.post("/refresh-all")
-async def refresh_all(request: Request, submitted_csrf: str = Form(alias="csrf_token")) -> Response:
-    require_admin(request)
-    verify_csrf(request, submitted_csrf)
-    with request.app.state.session_factory() as session:
-        identifiers = session.scalars(select(Product.id).where(Product.status == "active")).all()
-    for product_id in identifiers:
-        request.app.state.scheduler.request_check(product_id, "manual")
-    return RedirectResponse("/status?refresh=1", status_code=303)
 
 
 @router.get("/status")

@@ -32,7 +32,7 @@
 {% endif %}
 {% if preview %}
 <section class="panel preview"><div class="eyebrow">核对页面信息</div><h2>{{ preview.name }}</h2>{% if preview_rows %}<dl class="config-rows detail-config">{% for label, value in preview_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% else %}<p class="config">配置尚未识别</p>{% endif %}{% if recipe %}<p class="muted">已按所选配置读取页面最终报价</p>{% endif %}<div class="preview-price">{{ '$' if preview.price.currency == 'USD' else preview.price.currency ~ ' ' }}{{ '%.2f' | format(preview.price.minor / 100) }}</div><p class="muted">商品编号 {{ preview.identity.sku or '未识别' }} · {{ preview.availability }}</p>
-  <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并开始监控</button></form>
+  <form action="/products/confirm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="preview_token" value="{{ preview_token }}"><button class="button primary" type="submit">确认并添加商品</button></form>
 </section>
 {% endif %}
 {% endblock %}

@@ -4,6 +4,85 @@
   min-width: 0;
 }
 
+.card-toolbar,
+.card-controls,
+.card-toolbar .card-top {
+  display: flex;
+  align-items: center;
+}
+
+.card-toolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.card-toolbar .card-top {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.card-controls {
+  gap: 7px;
+  margin-left: auto;
+}
+
+.card-controls form {
+  margin: 0;
+}
+
+.card-control,
+.check-time {
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--soft);
+  color: var(--text);
+}
+
+.card-control {
+  min-width: 36px;
+  padding: 0 9px;
+  font-size: 22px;
+}
+
+.card-control:hover,
+.check-time:hover {
+  border-color: var(--brand);
+}
+
+.check-time {
+  width: 108px;
+  padding: 0 7px;
+  font-size: 13px;
+}
+
+.auto-switch {
+  display: flex;
+  align-items: center;
+  width: 49px;
+  padding: 4px;
+  border-radius: 20px;
+}
+
+.auto-switch[aria-checked="true"] {
+  justify-content: flex-end;
+  background: var(--brand);
+}
+
+.auto-switch:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.switch-knob {
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: var(--shadow);
+}
+
 .card-select h3,
 .config-rows dt,
 .config-rows dd {
@@ -32,6 +111,12 @@
 
 .product-grid[data-view="list"] .card-select {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(140px, .8fr);
+}
+
+.product-grid[data-view="list"] .card-select h3,
+.product-grid[data-view="list"] .card-select .config-rows,
+.product-grid[data-view="list"] .card-select .price-block {
+  grid-row: 1;
 }
 
 @media (max-width: 760px) {

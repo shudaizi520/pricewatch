@@ -3,6 +3,9 @@ document.querySelectorAll('form[data-confirm]').forEach(form => {
     if (!window.confirm(form.dataset.confirm)) event.preventDefault();
   });
 });
+document.querySelectorAll('form[data-auto-save-time]').forEach(form => {
+  form.querySelector('input[type="time"]').addEventListener('change', () => form.requestSubmit());
+});
 const productGrid = document.querySelector('.product-grid');
 if (productGrid) {
   const choice = localStorage.getItem('pricewatch-view') === 'list' ? 'list' : 'cards';

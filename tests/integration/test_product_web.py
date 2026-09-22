@@ -6,7 +6,7 @@ import pytest
 from bs4 import BeautifulSoup
 from sqlalchemy import func, select
 
-from pricewatch.db.models import Observation, Product
+from pricewatch.db.models import Observation, Product, Setting
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError
 
@@ -178,15 +178,15 @@ async def test_status_shows_beijing_time_for_utc_check(admin_client):
 
 
 @pytest.mark.anyio
-async def test_refresh_all_queues_active_products_only(admin_client, monkeypatch):
+async def test_card_manual_refresh_works_without_auto_schedule(admin_client, monkeypatch):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
-        for status in ("active", "active", "paused", "archived"):
-            session.add(
-                Product(
-                    source_site="dell-us", requested_url="https://www.dell.com/x", status=status
-                )
-            )
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/x", status="paused"
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
     queued = []
     monkeypatch.setattr(
         app.state.scheduler,
@@ -194,14 +194,15 @@ async def test_refresh_all_queues_active_products_only(admin_client, monkeypatch
         lambda product_id, trigger: queued.append((product_id, trigger)),
     )
     page = await admin_client.get("/")
-    assert 'aria-label="刷新全部价格"' in page.text
-    denied = await admin_client.post("/refresh-all", data={"csrf_token": "invalid"})
-    assert denied.status_code == 403
-    response = await admin_client.post("/refresh-all", data={"csrf_token": csrf(page.text)})
+    assert 'aria-label="刷新全部价格"' not in page.text
+    assert f'action="/products/{product_id}/check"' in page.text
+    removed = await admin_client.post("/refresh-all", data={"csrf_token": csrf(page.text)})
+    assert removed.status_code == 404
+    response = await admin_client.post(
+        f"/products/{product_id}/check", data={"csrf_token": csrf(page.text)}
+    )
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/status?")
-    assert len(queued) == 2
-    assert all(trigger == "manual" for _, trigger in queued)
+    assert queued == [(product_id, "manual")]
 
 
 @pytest.mark.anyio
@@ -251,6 +252,9 @@ async def test_preview_does_not_create_product_until_confirm(admin_client, monke
     assert confirmed.status_code == 303
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(Product.id))) == 1
+        saved = session.scalar(select(Product))
+        assert saved.status == "paused"
+        assert saved.next_check_at is None
 
 
 @pytest.mark.anyio
@@ -473,7 +477,7 @@ async def test_target_and_pause(admin_client):
         session.flush()
         product_id = product.id
     page = await admin_client.get(f"/products/{product_id}")
-    assert "每天 10:00" in page.text
+    assert "未设置时间" in page.text
     assert 'name="check_interval_hours"' not in page.text
     updated = await admin_client.post(
         f"/products/{product_id}/settings",
@@ -497,12 +501,115 @@ async def test_target_and_pause(admin_client):
 
 
 @pytest.mark.anyio
-async def test_dashboard_shows_daily_beijing_check_time(admin_client):
-    dashboard = await admin_client.get("/")
-    assert dashboard.status_code == 200
-    assert "每天 10:00" in dashboard.text
-    assert "北京时间" in dashboard.text
-    assert "每 6 小时" not in dashboard.text
+async def test_each_card_time_and_auto_switch_control_monitoring_count(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        products = [
+            Product(
+                source_site="dell-us",
+                requested_url=f"https://www.dell.com/{index}",
+                status="paused",
+            )
+            for index in range(3)
+        ]
+        session.add_all(products)
+        session.flush()
+        ids = [product.id for product in products]
+
+    async def count() -> int:
+        page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+        return int(page.select_one(".stats .stat strong").get_text(strip=True))
+
+    assert await count() == 0
+    page = await admin_client.get("/")
+    assert "每天 10:00" not in page.text
+    assert page.text.count('name="check_time"') == 3
+    assert page.text.count('role="switch"') == 3
+    for product_id, chosen in zip(ids, ("08:10", "10:20", "17:30"), strict=True):
+        saved = await admin_client.post(
+            f"/products/{product_id}/check-time",
+            data={"check_time": chosen, "csrf_token": csrf((await admin_client.get("/")).text)},
+        )
+        assert saved.status_code == 303
+        switched = await admin_client.post(
+            f"/products/{product_id}/pause",
+            data={"return_to": "dashboard", "csrf_token": csrf((await admin_client.get("/")).text)},
+        )
+        assert switched.status_code == 303
+    assert await count() == 3
+    switched_off = await admin_client.post(
+        f"/products/{ids[1]}/pause",
+        data={"return_to": "dashboard", "csrf_token": csrf((await admin_client.get("/")).text)},
+    )
+    assert switched_off.status_code == 303
+    assert await count() == 2
+    for product_id in (ids[0], ids[2]):
+        await admin_client.post(
+            f"/products/{product_id}/pause",
+            data={"return_to": "dashboard", "csrf_token": csrf((await admin_client.get("/")).text)},
+        )
+    assert await count() == 0
+    with app.state.session_factory() as session:
+        assert session.scalar(select(func.count(Product.id)).where(Product.status == "active")) == 0
+        assert session.get(Setting, f"product_check_time:{ids[0]}").value_text == "08:10"
+
+
+@pytest.mark.anyio
+async def test_auto_switch_requires_time_and_rejects_duplicate_active_time(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        products = [
+            Product(
+                source_site="dell-us",
+                requested_url=f"https://www.dell.com/{index}",
+                status="paused",
+            )
+            for index in range(2)
+        ]
+        session.add_all(products)
+        session.flush()
+        first, second = [product.id for product in products]
+    page = await admin_client.get("/")
+    missing = await admin_client.post(
+        f"/products/{first}/pause",
+        data={"return_to": "dashboard", "csrf_token": csrf(page.text)},
+    )
+    assert missing.status_code == 303
+    assert missing.headers["location"].endswith("schedule_error=missing")
+    for product_id in (first, second):
+        result = await admin_client.post(
+            f"/products/{product_id}/check-time",
+            data={"check_time": "09:30", "csrf_token": csrf(page.text)},
+        )
+        assert result.status_code == 303
+    await admin_client.post(
+        f"/products/{first}/pause",
+        data={"return_to": "dashboard", "csrf_token": csrf(page.text)},
+    )
+    conflict = await admin_client.post(
+        f"/products/{second}/pause",
+        data={"return_to": "dashboard", "csrf_token": csrf(page.text)},
+    )
+    assert conflict.status_code == 303
+    assert conflict.headers["location"].endswith("schedule_error=conflict")
+    with app.state.session_factory() as session:
+        assert session.get(Product, first).status == "active"
+        assert session.get(Product, second).status == "paused"
+
+
+@pytest.mark.anyio
+async def test_configuration_review_does_not_offer_auto_switch(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us", requested_url="https://www.dell.com/x", status="needs_attention"
+        )
+        session.add(product)
+        session.flush()
+        identifier = product.id
+    detail = await admin_client.get(f"/products/{identifier}")
+    assert detail.status_code == 200
+    assert f'action="/products/{identifier}/pause"' not in detail.text
 
 
 @pytest.mark.anyio
@@ -543,8 +650,10 @@ async def test_confirm_configuration_adopts_new_baseline(admin_client):
     with app.state.session_factory() as session:
         stored = session.get(Product, product_id)
         assert stored.configuration["gpu"] == "RTX 5080"
+        assert stored.status == "paused"
+        assert stored.next_check_at is None
     outcome = checker.accept_snapshot(product_id, observation("RTX 5080", 280000))
-    assert outcome.product.status == "active"
+    assert outcome.product.status == "paused"
     assert outcome.events == []
 
 
@@ -656,6 +765,7 @@ async def test_archive_restore_and_permanent_delete_are_explicit(admin_client):
         session.add(item)
         session.flush()
         product_id = item.id
+        session.add(Setting(key=f"product_check_time:{product_id}", value_text="08:10"))
         session.add(
             Observation(
                 product_id=product_id,
@@ -703,6 +813,7 @@ async def test_archive_restore_and_permanent_delete_are_explicit(admin_client):
     assert deleted.status_code == 303
     with app.state.session_factory() as session:
         assert session.get(Product, product_id) is None
+        assert session.get(Setting, f"product_check_time:{product_id}") is None
 
 
 @pytest.mark.anyio
@@ -757,6 +868,8 @@ async def test_configuration_review_shows_difference_and_can_split(admin_client)
         assert session.get(Product, product_id).status == "paused"
         fresh = session.scalar(select(Product).where(Product.id != product_id))
         assert fresh.configuration["gpu"] == "RTX 5080"
+        assert fresh.status == "paused"
+        assert fresh.next_check_at is None
 
 
 @pytest.mark.anyio
