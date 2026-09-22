@@ -41,12 +41,20 @@ def configuration_rows(
 ) -> list[tuple[str, str]]:
     if not record:
         return []
+    extras = record.get("extras")
+    cpu = record.get("cpu")
+    processor = extras.get("Processor") if isinstance(extras, dict) else None
+    if (
+        (not isinstance(cpu, str) or not cpu.strip())
+        and isinstance(processor, str)
+        and processor.strip()
+    ):
+        record = {**record, "cpu": processor}
     rows = [
         (label, str(record[key]).strip())
         for key, label in LABELS.items()
         if isinstance(record.get(key), str) and str(record[key]).strip()
     ]
-    extras = record.get("extras")
     if isinstance(extras, dict):
         known = {value for _, value in rows}
         for key, value in extras.items():

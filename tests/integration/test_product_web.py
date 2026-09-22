@@ -188,6 +188,35 @@ async def test_card_keeps_key_configuration_visible_and_folds_other_options(admi
 
 
 @pytest.mark.anyio
+async def test_desktop_card_shows_processor_above_fold_for_existing_record(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/desktops/spd/area51",
+                name="Alienware Area-51 Gaming Desktop",
+                configuration={
+                    "gpu": "RTX 5090",
+                    "extras": {
+                        "Processor": "Intel Core Ultra 9 285K processor",
+                        "Power Supply": "1500W PSU",
+                    },
+                },
+            )
+        )
+
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    card = page.select_one(".product-card")
+    assert "Intel Core Ultra 9 285K processor" in card.select_one(".card-select").get_text(
+        " ", strip=True
+    )
+    folded = card.select_one("details.secondary-config")
+    assert "Intel Core Ultra 9 285K processor" not in folded.get_text(" ", strip=True)
+    assert "1500W PSU" in folded.get_text(" ", strip=True)
+
+
+@pytest.mark.anyio
 async def test_expanded_extra_labels_wrap_without_overlapping_values(admin_client):
     from playwright.async_api import async_playwright
 
