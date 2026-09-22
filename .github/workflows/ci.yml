@@ -106,3 +106,58 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+  published-image-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull public image and start blank Compose install
+        run: |
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml pull
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml up -d
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+      - name: Set up administrator and verify restart persistence
+        run: |
+          container="$(docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml ps -q pricewatch)"
+          docker exec -i "$container" python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.goto("http://127.0.0.1:8080/initialize")
+              page.get_by_label("账号").fill("owner")
+              page.get_by_label("密码", exact=True).fill("VeryStrongSecret123!")
+              page.get_by_label("确认密码").fill("VeryStrongSecret123!")
+              page.get_by_role("button", name="创建并进入").click()
+              assert page.get_by_role("heading", name="商品监控").is_visible()
+              browser.close()
+          PY
+          before="$(docker exec "$container" sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml restart
+          for attempt in {1..45}; do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          test "$before" = "$(docker exec "$container" sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
+          docker exec -i "$container" python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.goto("http://127.0.0.1:8080/login")
+              page.get_by_label("账号").fill("owner")
+              page.get_by_label("密码").fill("VeryStrongSecret123!")
+              page.get_by_role("button", name="登录").click()
+              assert page.get_by_role("heading", name="商品监控").is_visible()
+              browser.close()
+          PY
+      - name: Remove isolated smoke install
+        if: always()
+        run: docker compose -p pricewatch-ghcr-smoke -f compose.ghcr.yml down --volumes
