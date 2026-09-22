@@ -28,17 +28,6 @@ if (productGrid) {
   });
   setView(choice);
   const cards = [...document.querySelectorAll('.product-card[data-product-id]')];
-  function selectCard(card) {
-    document.querySelector('#selected-price').textContent = card.dataset.price || '—';
-    cards.forEach(item => {
-      item.querySelector('.card-select').setAttribute('aria-pressed', String(item === card));
-    });
-    localStorage.setItem('pricewatch-selected-product', card.dataset.productId);
-  }
-  cards.forEach(card => card.querySelector('.card-select').addEventListener('click', () => selectCard(card)));
-  const saved = localStorage.getItem('pricewatch-selected-product');
-  selectCard(cards.find(card => card.dataset.productId === saved) || cards[0]);
-
   const cardById = new Map(cards.map(card => [card.dataset.productId, card]));
   let pollTimer;
   let pollInFlight = false;
@@ -78,13 +67,11 @@ if (productGrid) {
     card.dataset.runId = newRunId;
     setChecking(card, state.pending);
     showCheckStatus(card, state.status_text, state.status_kind);
-    card.dataset.price = state.price;
     card.querySelector('.price').textContent = state.price;
     card.querySelector('.card-lowest').textContent = state.lowest;
-    card.querySelector('.sparkline polyline').setAttribute('points', state.sparkline);
-    if (card.querySelector('.card-select').getAttribute('aria-pressed') === 'true') {
-      document.querySelector('#selected-price').textContent = state.price;
-    }
+    const change = card.querySelector('.price-change');
+    change.textContent = state.price_change_text;
+    change.dataset.kind = state.price_change_kind;
   }
   function schedulePoll(delay) {
     clearTimeout(pollTimer);
@@ -114,6 +101,13 @@ if (productGrid) {
       for (const [id, state] of Object.entries(result.products)) {
         const card = cardById.get(id);
         if (card) updateCard(card, state);
+      }
+      if (result.summary) {
+        document.querySelector('#monitoring-count').textContent = result.summary.monitoring_count;
+        const abnormal = document.querySelector('#abnormal-count');
+        abnormal.textContent = result.summary.abnormal_count;
+        abnormal.dataset.hasIssues = String(result.summary.abnormal_count > 0);
+        document.querySelector('#next-check-time').textContent = result.summary.next_check_time;
       }
       schedulePoll(cards.some(card => card.querySelector('.manual-refresh').disabled) ? 2000 : 30000);
     } catch (_) {

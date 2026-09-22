@@ -4,6 +4,27 @@
   min-width: 0;
 }
 
+.price-block {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.price-change {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.price-change[data-kind="up"],
+#abnormal-count[data-has-issues="true"] {
+  color: #c23d3d;
+}
+
+.price-change[data-kind="down"] {
+  color: var(--good);
+}
+
 .card-toolbar,
 .card-controls,
 .card-toolbar .card-top {

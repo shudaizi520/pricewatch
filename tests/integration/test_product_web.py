@@ -472,7 +472,193 @@ async def test_check_status_returns_new_trusted_price_after_success(admin_client
     assert state["status_text"] == "自动检查成功 · 2026-09-22 11:06 北京时间"
     assert state["price"] == "$6699.99"
     assert state["lowest"] == "最低 $6699.99"
-    assert len(state["sparkline"].split()) == 2
+    assert state["price_change_text"] == "下降 $100.00"
+    assert state["price_change_kind"] == "down"
+
+
+@pytest.mark.anyio
+async def test_dashboard_overview_counts_abnormal_products_and_next_active_check(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        cases = [
+            ("active", datetime(2026, 9, 22, 3, tzinfo=UTC), "failed"),
+            ("active", datetime(2026, 9, 22, 2, tzinfo=UTC), "ok"),
+            ("needs_attention", None, None),
+            ("paused", None, "failed"),
+        ]
+        for status, next_check_at, outcome in cases:
+            product = Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/x",
+                status=status,
+                next_check_at=next_check_at,
+            )
+            session.add(product)
+            session.flush()
+            if outcome:
+                session.add(CheckRun(product_id=product.id, trigger="scheduled", outcome=outcome))
+
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    assert page.select_one("#monitoring-count").get_text(strip=True) == "2"
+    assert page.select_one("#abnormal-count").get_text(strip=True) == "2"
+    assert page.select_one("#next-check-time").get_text(strip=True) == "2026-09-22 10:00"
+    assert "北京时间" in page.select_one("#next-check-time").parent.get_text(" ", strip=True)
+
+    summary = (await admin_client.get("/check-status")).json()["summary"]
+    assert summary == {
+        "monitoring_count": 2,
+        "abnormal_count": 2,
+        "next_check_time": "2026-09-22 10:00",
+    }
+
+
+@pytest.mark.anyio
+async def test_dashboard_price_comparison_replaces_flat_sparkline(admin_client):
+    app = admin_client._transport.app
+    cases = [
+        ([("USD", 650000), ("USD", 679999)], "上涨 $299.99", "up"),
+        ([("USD", 699999), ("USD", 679999)], "下降 $200.00", "down"),
+        ([("USD", 679999), ("USD", 679999)], "较上次持平", "flat"),
+        ([("USD", 679999)], "暂无对比", "unknown"),
+        ([("EUR", 679999), ("USD", 679999)], "暂无对比", "unknown"),
+    ]
+    product_ids = []
+    with app.state.session_factory.begin() as session:
+        for prices, _, _ in cases:
+            product = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+            session.add(product)
+            session.flush()
+            product_ids.append(product.id)
+            for index, (currency, price) in enumerate(prices):
+                session.add(
+                    Observation(
+                        product_id=product.id,
+                        currency=currency,
+                        price_minor=price,
+                        trusted=True,
+                        observed_at=datetime(2026, 9, 21, index, tzinfo=UTC),
+                    )
+                )
+
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    states = (await admin_client.get("/check-status")).json()["products"]
+    for product_id, (_, expected_text, expected_kind) in zip(product_ids, cases, strict=True):
+        card = page.select_one(f'.product-card[data-product-id="{product_id}"]')
+        comparison = card.select_one(".price-change")
+        assert comparison.get_text(strip=True) == expected_text
+        assert comparison["data-kind"] == expected_kind
+        assert card.select_one(".sparkline") is None
+        assert states[str(product_id)]["price_change_text"] == expected_text
+        assert states[str(product_id)]["price_change_kind"] == expected_kind
+
+
+@pytest.mark.anyio
+async def test_price_change_colors_distinguish_rising_and_falling_prices(admin_client):
+    from playwright.async_api import async_playwright
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        for before, after in [(650000, 679999), (699999, 679999)]:
+            product = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+            session.add(product)
+            session.flush()
+            for index, price in enumerate((before, after)):
+                session.add(
+                    Observation(
+                        product_id=product.id,
+                        currency="USD",
+                        price_minor=price,
+                        observed_at=datetime(2026, 9, 21, index, tzinfo=UTC),
+                    )
+                )
+
+    markup = (await admin_client.get("/")).text
+    css = Path(__file__).parents[2] / "src" / "pricewatch" / "static"
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(headless=True)
+        except Exception as error:
+            if "error while loading shared libraries" in str(error):
+                pytest.skip("Local Chromium system libraries are unavailable")
+            raise
+        try:
+            page = await browser.new_page()
+            await page.set_content(markup)
+            await page.add_style_tag(path=str(css / "app.css"))
+            await page.add_style_tag(path=str(css / "cards.css"))
+            up = await page.locator('.price-change[data-kind="up"]').evaluate(
+                "element => getComputedStyle(element).color"
+            )
+            down = await page.locator('.price-change[data-kind="down"]').evaluate(
+                "element => getComputedStyle(element).color"
+            )
+            assert up == "rgb(194, 61, 61)"
+            assert down != up
+        finally:
+            await browser.close()
+
+
+@pytest.mark.anyio
+async def test_check_status_poll_updates_overview_and_price_comparison(admin_client):
+    from playwright.async_api import async_playwright, expect
+
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(source_site="dell-us", requested_url="https://www.dell.com/x")
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    markup = (await admin_client.get("/")).text
+    script = Path(__file__).parents[2] / "src" / "pricewatch" / "static" / "app.js"
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(headless=True)
+        except Exception as error:
+            if "error while loading shared libraries" in str(error):
+                pytest.skip("Local Chromium system libraries are unavailable")
+            raise
+        try:
+            page = await browser.new_page()
+            await page.route(
+                "http://pricewatch.test/**",
+                lambda route: route.fulfill(
+                    status=200, content_type="text/html", body="<html></html>"
+                ),
+            )
+            await page.goto("http://pricewatch.test/")
+            await page.set_content(markup)
+            await page.evaluate(
+                """(productId) => {
+                  window.fetch = async () => ({
+                    ok: true,
+                    json: async () => ({
+                      summary: {
+                        monitoring_count: 1,
+                        abnormal_count: 1,
+                        next_check_time: '2026-09-22 11:00'
+                      },
+                      products: {
+                        [productId]: {
+                          run_id: 7, pending: false, status_kind: 'failed',
+                          status_text: '自动检查失败', price: '$6799.99',
+                          lowest: '最低 $6799.99',
+                          price_change_text: '下降 $100.00',
+                          price_change_kind: 'down'
+                        }
+                      }
+                    })
+                  });
+                }""",
+                str(product_id),
+            )
+            await page.add_script_tag(path=str(script))
+            await expect(page.locator("#abnormal-count")).to_have_text("1")
+            await expect(page.locator("#next-check-time")).to_have_text("2026-09-22 11:00")
+            await expect(page.locator(".price-change")).to_have_text("下降 $100.00")
+            assert await page.locator(".price-change").get_attribute("data-kind") == "down"
+        finally:
+            await browser.close()
 
 
 @pytest.mark.anyio
@@ -1052,12 +1238,12 @@ async def test_non_usd_prices_are_not_displayed_as_dollars_or_mixed_in_overview(
     assert "EUR 1999.00" in dashboard
     assert "EUR 1999.00" in detail
     assert "$1999.00" not in dashboard + detail
-    assert "所选商品价格" in dashboard
+    assert "所选商品价格" not in dashboard
     assert "最低 $1999.00" not in dashboard
 
 
 @pytest.mark.anyio
-async def test_dashboard_cards_show_labeled_config_and_selectable_currency(admin_client):
+async def test_dashboard_cards_show_labeled_config_and_open_details(admin_client):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
         for currency, price, gpu in [("USD", 399999, "RTX 5070"), ("CNY", 3741430, "RTX 5090")]:
@@ -1077,11 +1263,17 @@ async def test_dashboard_cards_show_labeled_config_and_selectable_currency(admin
                     configuration_fingerprint="a",
                 )
             )
-    dashboard = (await admin_client.get("/")).text
-    assert "显卡" in dashboard and "RTX 5090" in dashboard
-    assert 'data-currency="CNY"' in dashboard
-    assert 'data-price="CNY 37414.30"' in dashboard
-    assert dashboard.count('class="card-select"') == 2
+    dashboard = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    cards = dashboard.select(".product-card")
+    assert len(cards) == 2
+    assert "显卡" in dashboard.get_text(" ", strip=True)
+    assert "RTX 5090" in dashboard.get_text(" ", strip=True)
+    assert "CNY 37414.30" in dashboard.get_text(" ", strip=True)
+    for card in cards:
+        link = card.select_one("a.card-select")
+        assert link["href"] == f'/products/{card["data-product-id"]}'
+        assert not link.has_attr("aria-pressed")
+    assert dashboard.select_one("#selected-price") is None
 
 
 @pytest.mark.anyio

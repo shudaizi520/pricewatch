@@ -3,6 +3,7 @@
 import csv
 import io
 import secrets
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -45,20 +46,21 @@ def _product(request: Request, product_id: int) -> Product:
         return product  # type: ignore[no-any-return]
 
 
-def _sparkline(observations: list[Observation]) -> str:
-    prices = [row.price_minor for row in reversed(observations)]
-    if not prices:
-        return "0,24 135,24"
-    low, high = min(prices), max(prices)
-    span = max(high - low, 1)
-    return " ".join(
-        f"{round(index * 135 / max(len(prices) - 1, 1))},{round(43 - (price - low) * 38 / span)}"
-        for index, price in enumerate(prices)
-    )
-
-
 def _display_price(currency: str, minor: int) -> str:
     return f"{'$' if currency == 'USD' else currency + ' '}{minor / 100:.2f}"
+
+
+def _price_change(observations: list[Observation]) -> dict[str, str]:
+    if len(observations) < 2 or observations[0].currency != observations[1].currency:
+        return {"text": "暂无对比", "kind": "unknown"}
+    delta = observations[0].price_minor - observations[1].price_minor
+    if delta == 0:
+        return {"text": "较上次持平", "kind": "flat"}
+    direction = "上涨" if delta > 0 else "下降"
+    return {
+        "text": f"{direction} {_display_price(observations[0].currency, abs(delta))}",
+        "kind": "up" if delta > 0 else "down",
+    }
 
 
 def _latest_check(session: Session, product_id: int) -> CheckRun | None:
@@ -68,6 +70,31 @@ def _latest_check(session: Session, product_id: int) -> CheckRun | None:
         .order_by(CheckRun.created_at.desc(), CheckRun.id.desc())
         .limit(1)
     )
+
+
+def _overview(
+    products: Sequence[Product], latest_checks: dict[int, CheckRun | None]
+) -> dict[str, str | int]:
+    due = [
+        local
+        for product in products
+        if product.status == "active"
+        if (local := beijing_time(product.next_check_at)) is not None
+    ]
+    abnormal_count = sum(
+        product.status == "needs_attention"
+        or (
+            product.status == "active"
+            and (run := latest_checks.get(product.id)) is not None
+            and run.outcome in {"failed", "needs_attention"}
+        )
+        for product in products
+    )
+    return {
+        "monitoring_count": sum(product.status == "active" for product in products),
+        "abnormal_count": abnormal_count,
+        "next_check_time": beijing_label(min(due)) if due else "未安排",
+    }
 
 
 def _check_status(run: CheckRun | None, pending: bool) -> dict[str, object]:
@@ -124,14 +151,15 @@ async def dashboard(request: Request) -> Response:
         products = session.scalars(
             select(Product).where(Product.status != "archived").order_by(Product.id.desc())
         ).all()
+        latest_checks = {product.id: _latest_check(session, product.id) for product in products}
         cards = []
         for product in products:
             check_time_setting = session.get(Setting, check_time_key(product.id))
             observations = session.scalars(
                 select(Observation)
                 .where(Observation.product_id == product.id, Observation.trusted.is_(True))
-                .order_by(Observation.observed_at.desc())
-                .limit(30)
+                .order_by(Observation.observed_at.desc(), Observation.id.desc())
+                .limit(2)
             ).all()
             latest = observations[0] if observations else None
             cards.append(
@@ -147,24 +175,24 @@ async def dashboard(request: Request) -> Response:
                     )
                     if latest
                     else None,
-                    "sparkline": _sparkline(observations),
+                    "price_change": _price_change(observations),
                     "configuration_rows": configuration_rows(product.configuration),
                     "secondary_rows": secondary_configuration_rows(product.configuration),
                     "display_price": _display_price(latest.currency, latest.price_minor)
                     if latest
                     else "—",
-                    "currency": latest.currency if latest else "",
                     "check_time": check_time_setting.value_text if check_time_setting else None,
                     "check_state": _check_status(
-                        _latest_check(session, product.id),
+                        latest_checks[product.id],
                         product.id in request.app.state.scheduler.pending,
                     ),
                 }
             )
+        overview = _overview(products, latest_checks)
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context=_context(request, cards=cards),
+        context=_context(request, cards=cards, overview=overview),
     )
 
 
@@ -173,15 +201,17 @@ async def check_status(request: Request) -> JSONResponse:
     require_admin(request)
     products: dict[str, dict[str, object]] = {}
     with request.app.state.session_factory() as session:
-        product_ids = session.scalars(
-            select(Product.id).where(Product.status != "archived")
+        product_rows = session.scalars(
+            select(Product).where(Product.status != "archived")
         ).all()
-        for product_id in product_ids:
+        latest_checks = {product.id: _latest_check(session, product.id) for product in product_rows}
+        for product in product_rows:
+            product_id = product.id
             observations = session.scalars(
                 select(Observation)
                 .where(Observation.product_id == product_id, Observation.trusted.is_(True))
                 .order_by(Observation.observed_at.desc(), Observation.id.desc())
-                .limit(30)
+                .limit(2)
             ).all()
             latest = observations[0] if observations else None
             lowest = (
@@ -195,9 +225,10 @@ async def check_status(request: Request) -> JSONResponse:
                 if latest
                 else None
             )
+            price_change = _price_change(observations)
             products[str(product_id)] = {
                 **_check_status(
-                    _latest_check(session, product_id),
+                    latest_checks[product_id],
                     product_id in request.app.state.scheduler.pending,
                 ),
                 "price": _display_price(latest.currency, latest.price_minor)
@@ -206,9 +237,13 @@ async def check_status(request: Request) -> JSONResponse:
                 "lowest": f"最低 {_display_price(latest.currency, lowest)}"
                 if latest and lowest is not None
                 else "尚无价格记录",
-                "sparkline": _sparkline(observations),
+                "price_change_text": price_change["text"],
+                "price_change_kind": price_change["kind"],
             }
-    return JSONResponse({"products": products}, headers={"Cache-Control": "no-store"})
+        overview = _overview(product_rows, latest_checks)
+    return JSONResponse(
+        {"products": products, "summary": overview}, headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.get("/products/new", response_class=HTMLResponse)

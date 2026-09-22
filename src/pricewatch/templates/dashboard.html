@@ -9,16 +9,16 @@
 <div class="notice" role="alert">{{ '请先为这件商品设置北京时间' if request.query_params.get('schedule_error') == 'missing' else '这个时间已有自动检查的商品，请错开' if request.query_params.get('schedule_error') == 'conflict' else '检查时间无效，请重新选择' }}</div>
 {% endif %}
 <section class="stats" aria-label="监控概况">
-  <div class="stat"><span class="stat-symbol" aria-hidden="true">◉</span><div><strong>{{ cards | selectattr('product.status', 'equalto', 'active') | list | length }}</strong><span>正在监控</span></div></div>
-  <div class="stat"><span class="stat-symbol" aria-hidden="true">↘</span><div><strong id="selected-price">{{ cards[0].display_price if cards else '—' }}</strong><span>所选商品价格</span></div></div>
-  <div class="stat"><span class="stat-symbol" aria-hidden="true">⌁</span><div><strong>独立定时</strong><span>各商品自行设置 · 北京时间</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">◉</span><div><strong id="monitoring-count">{{ overview.monitoring_count }}</strong><span>正在监控</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">!</span><div><strong id="abnormal-count" data-has-issues="{{ 'true' if overview.abnormal_count else 'false' }}">{{ overview.abnormal_count }}</strong><span>检查异常 · 件</span></div></div>
+  <div class="stat"><span class="stat-symbol" aria-hidden="true">◷</span><div><strong id="next-check-time">{{ overview.next_check_time }}</strong><span>下次自动检查 · 北京时间</span></div></div>
 </section>
 <div class="section-heading"><h2>监控列表 <small class="muted">{{ cards | length }} 件商品</small></h2><div class="view-toggle" role="group" aria-label="布局选择"><button type="button" data-view-choice="cards" aria-pressed="true">卡片</button><button type="button" data-view-choice="list" aria-pressed="false">列表</button></div></div>
 {% if cards %}
 <section class="product-grid" aria-label="监控商品">
 {% for card in cards %}
   {% set product = card.product %}{% set latest = card.latest %}
-  <article class="product-card" data-product-id="{{ product.id }}" data-price="{{ card.display_price }}" data-currency="{{ card.currency }}" data-run-id="{{ card.check_state.run_id or '' }}">
+  <article class="product-card" data-product-id="{{ product.id }}" data-run-id="{{ card.check_state.run_id or '' }}">
     <div class="card-toolbar">
       <div class="card-top"><span class="site">{{ 'DELL · US' if product.source_site == 'dell-us' else product.source_site | upper }}</span>{% if product.status != 'paused' %}<span class="badge {{ product.status }}">{{ '配置待确认' if product.status == 'needs_attention' else '监控中' }}</span>{% endif %}</div>
       <div class="card-control-stack">
@@ -33,11 +33,11 @@
         <p class="card-check-status" data-kind="{{ card.check_state.status_kind }}" role="status" aria-live="polite">{{ card.check_state.status_text }}</p>
       </div>
     </div>
-    <button type="button" class="card-select" aria-pressed="{{ 'true' if loop.first else 'false' }}" aria-label="选择 {{ product.name or '商品' }} 的价格">
+    <a class="card-select" href="/products/{{ product.id }}" aria-label="查看 {{ product.name or '商品' }} 的详情">
     <h3>{{ product.name or '等待首次检查' }}</h3>
     {% if card.configuration_rows %}<dl class="config-rows">{% for label, value in card.configuration_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% else %}<p class="config">正在识别商品配置</p>{% endif %}
-    <div class="price-block"><div><span class="price">{% if latest %}{{ '$' if latest.currency == 'USD' else latest.currency ~ ' ' }}{{ '%.2f' | format(latest.price_minor / 100) }}{% else %}—{% endif %}</span></div><svg class="sparkline" viewBox="0 0 135 48" aria-label="近期价格走势" role="img"><polyline points="{{ card.sparkline }}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-    </button>
+    <div class="price-block"><span class="price">{{ card.display_price }}</span><span class="price-change" data-kind="{{ card.price_change.kind }}">{{ card.price_change.text }}</span></div>
+    </a>
     {% if card.secondary_rows %}<details class="secondary-config"><summary>其他配置 · {{ card.secondary_rows | length }} 项</summary><dl class="config-rows">{% for label, value in card.secondary_rows %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl></details>{% endif %}
     <div class="card-bottom"><span class="card-lowest">{% if card.lowest is not none %}最低 {{ '$' if latest.currency == 'USD' else latest.currency ~ ' ' }}{{ '%.2f' | format(card.lowest / 100) }}{% else %}尚无价格记录{% endif %}</span><div class="card-actions"><a class="link" href="/products/{{ product.id }}">查看详情 ↗</a><form action="/products/{{ product.id }}/archive" method="post" data-confirm="移除这张卡片？历史记录会保留。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">移除</button></form></div></div>
   </article>
