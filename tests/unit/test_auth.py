@@ -40,6 +40,30 @@ def test_password_hash_verifies_only_correct_password():
 
 
 @pytest.mark.anyio
+async def test_first_visit_opens_account_setup(client):
+    home = await client.get("/", follow_redirects=False)
+    login = await client.get("/login", follow_redirects=False)
+
+    assert home.status_code == 303
+    assert home.headers["location"] == "/initialize"
+    assert login.status_code == 303
+    assert login.headers["location"] == "/initialize"
+
+
+@pytest.mark.anyio
+async def test_existing_account_keeps_login_flow(client):
+    await create_admin(client)
+    client.cookies.clear()
+
+    home = await client.get("/", follow_redirects=False)
+    login = await client.get("/login", follow_redirects=False)
+
+    assert home.status_code == 303
+    assert home.headers["location"] == "/login"
+    assert login.status_code == 200
+
+
+@pytest.mark.anyio
 async def test_registration_closes_after_first_admin(client):
     response = await create_admin(client)
 
@@ -115,6 +139,8 @@ async def test_login_is_rate_limited_after_five_failures(client):
 @pytest.mark.anyio
 async def test_logs_never_contain_credentials(caplog, client):
     secret = "feishu-secret-not-for-logs"
+    await create_admin(client)
+    client.cookies.clear()
     caplog.set_level(logging.DEBUG)
     page = await client.get("/login")
 

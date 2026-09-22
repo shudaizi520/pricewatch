@@ -33,10 +33,10 @@ async def admin_client(client):
 
 
 @pytest.mark.anyio
-async def test_dashboard_needs_login(client):
+async def test_dashboard_needs_setup_on_first_run(client):
     response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/login"
+    assert response.headers["location"] == "/initialize"
 
 
 @pytest.mark.anyio
@@ -663,10 +663,10 @@ async def test_check_status_poll_updates_overview_and_price_comparison(admin_cli
 
 
 @pytest.mark.anyio
-async def test_check_status_requires_login(client):
+async def test_check_status_requires_setup_on_first_run(client):
     response = await client.get("/check-status", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/login"
+    assert response.headers["location"] == "/initialize"
 
 
 @pytest.mark.anyio

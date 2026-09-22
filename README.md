@@ -6,10 +6,10 @@
 
 ## 从 GitHub 镜像空白安装
 
-`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。公开的 `ghcr.io/shudaizi520/pricewatch:1.0.1` 已发布；需要联网的 x86-64 Docker/Compose 主机。
+`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.2`；需要联网的 x86-64 Docker/Compose 主机。
 
 1. 把 [compose.ghcr.yml](compose.ghcr.yml) 保存到一个新目录，在该目录运行 `docker compose -f compose.ghcr.yml pull`，再运行 `docker compose -f compose.ghcr.yml up -d`。
-2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；首次填写管理员账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
+2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；空白安装访问首页会自动进入创建管理员页面，首次填写账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
 3. 程序自动生成内部随机密钥，保存在 Docker 数据卷内的 `/data/.pricewatch-secret`，并和数据库一起跨容器重启保留。它不是账户密码，不会写进日志、页面或 GitHub。正常安装不用查看它；只有未来要搬迁**旧数据**时，才需要把整个 `/data` 数据卷（包含密钥）一起备份。
 
 这是一份**空白安装**：在另一台电脑重新安装会得到新账号和空商品列表，原来的商品、历史价格、飞书设置不会从 GitHub 自动恢复。Docker 跑在电脑上时，电脑关机就停止监控；放在常开的 NAS 上则不依赖电脑在线。若需要从局域网另一台设备访问，把 YAML 中端口绑定的 `127.0.0.1` 改成 Docker 主机的局域网 IP；不要直接把管理页面暴露到公网。以后更新时先把 YAML 的镜像标签改成已发布的**明确版本**，再运行 `docker compose -f compose.ghcr.yml pull` 和 `docker compose -f compose.ghcr.yml up -d`；同目录下的命名数据卷会保留。戴尔美国站若直连遇到 403，仍需按下文为安装设备配置可用的 SOCKS5 代理；空白安装本身不需要代理。
@@ -61,7 +61,7 @@
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。公开的 GHCR `linux/amd64` 镜像已经按签名的 `v1.0.1` 标签发布为 `1.0.1`、`1.0`、`1` 和 `latest`；空白安装请固定 `1.0.1`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。本次发布私钥已删除，后续发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布；空白安装请固定 `1.0.2`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
 
 CI 会完整报告镜像的高危/严重漏洞，并阻止任何已有修复版本却尚未升级的漏洞。2026-09-21 的试构建仍有 56 项 Debian 系统包告警（其中 1 项严重），扫描器尚未列出修复版本。这不是“零漏洞”；待上游发布修复后应及时重建和升级镜像。实机验收期间只应经受信任的局域网或反代访问，不应直接把 8080 暴露到公网。
 
