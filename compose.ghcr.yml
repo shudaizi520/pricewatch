@@ -1,6 +1,6 @@
 services:
   pricewatch:
-    image: ghcr.io/shudaizi520/pricewatch:1.0.2
+    image: ghcr.io/shudaizi520/pricewatch:1.0.3
     restart: unless-stopped
     init: true
     shm_size: 512mb
