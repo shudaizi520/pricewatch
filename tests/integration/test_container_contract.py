@@ -1,6 +1,8 @@
 """Deployment-file contracts independent of the local Docker daemon."""
 
+import os
 import sqlite3
+import subprocess
 from contextlib import closing
 from pathlib import Path
 
@@ -34,6 +36,40 @@ def test_image_non_root_one_worker_and_graphical_chromium():
     assert "exec uvicorn" in startup
     assert "--workers 1" in startup
     assert "python -m pricewatch.bootstrap" in startup
+
+
+def test_container_start_resolves_secret_before_database_migration(tmp_path):
+    fake_python = tmp_path / "python"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$2\" = pricewatch.runtime_secret ]; then\n"
+        "  printf 'generated-container-secret-at-least-32-chars\\n'\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$2\" = pricewatch.bootstrap ]; then\n"
+        "  printf '%s' \"${PRICEWATCH_APP_SECRET_KEY:-}\" > \"$PW_TEST_MARKER\"\n"
+        "  exit 42\n"
+        "fi\n"
+        "exit 99\n"
+    )
+    fake_python.chmod(0o755)
+    marker = tmp_path / "seen-secret"
+    environment = os.environ.copy()
+    environment.pop("PRICEWATCH_APP_SECRET_KEY", None)
+    environment["PATH"] = f"{tmp_path}:{environment['PATH']}"
+    environment["PW_TEST_MARKER"] = str(marker)
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "docker/start.sh")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 42
+    assert marker.read_text() == "generated-container-secret-at-least-32-chars"
+    assert "generated-container-secret-at-least-32-chars" not in result.stdout + result.stderr
 
 
 def test_compose_requires_secret():

@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ -z "${PRICEWATCH_APP_SECRET_KEY:-}" ]; then
+    PRICEWATCH_APP_SECRET_KEY="$(python -m pricewatch.runtime_secret)"
+    export PRICEWATCH_APP_SECRET_KEY
+fi
+
 python -m pricewatch.bootstrap
 
 Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp &
