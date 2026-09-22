@@ -282,6 +282,75 @@ async def test_us_dell_browser_uses_configured_upstream_socks(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_failed_dell_option_reports_configure_http_status_without_leaking_url(monkeypatch):
+    url = "https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250"
+
+    class FakePage:
+        def __init__(self):
+            self.url = url
+            self.listeners = {}
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            return None
+
+        async def content(self):
+            return "<html><body>Dell Price $3,999.99</body></html>"
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return FakePage()
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def failed_selection(page, _recipe):
+        page.listeners["response"](
+            type(
+                "Response",
+                (),
+                {
+                    "status": 403,
+                    "url": "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku?token=private-value",
+                },
+            )()
+        )
+        raise ValueError("戴尔没有完成配置切换: Graphics Card / RTX 5090")
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    monkeypatch.setattr("pricewatch.fetching.browser.apply_selection", failed_selection)
+    with pytest.raises(AcquisitionError) as caught:
+        await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(
+            URL(url), dell_selection={"Graphics Card": "RTX 5090"}
+        )
+    assert "配置接口 HTTP 403" in str(caught.value)
+    assert "private-value" not in str(caught.value)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "dell_url",
     [

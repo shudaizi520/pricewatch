@@ -131,6 +131,22 @@ class BrowserFetcher:
                 try:
                     context = await browser.new_context(accept_downloads=False)
                     page = await context.new_page()
+                    configure_statuses: list[int] = []
+                    configure_failures = 0
+                    if dell_selection is not None:
+
+                        def record_configure_response(response: Response) -> None:
+                            if URL(response.url).path.startswith("/shopapi/unifiedpd/configure/"):
+                                configure_statuses.append(response.status)
+
+                        def record_configure_failure(request: object) -> None:
+                            nonlocal configure_failures
+                            request_url = getattr(request, "url", "")
+                            if URL(request_url).path.startswith("/shopapi/unifiedpd/configure/"):
+                                configure_failures += 1
+
+                        page.on("response", record_configure_response)
+                        page.on("requestfailed", record_configure_failure)
                     if host not in {"www.dell.com", "dell.com"}:
                         await page.route("**/*", lambda route: self.handle_route(route, host))
                     response = await navigate_with_retry(page, str(url))
@@ -164,7 +180,13 @@ class BrowserFetcher:
                         try:
                             configured_offer = await apply_selection(page, dell_selection)
                         except ValueError as error:
-                            raise AcquisitionError(str(error)) from error
+                            if configure_statuses:
+                                detail = f"配置接口 HTTP {configure_statuses[-1]}"
+                            elif configure_failures:
+                                detail = "配置接口请求失败 (网络错误)"
+                            else:
+                                detail = "未收到配置接口响应"
+                            raise AcquisitionError(f"{error}; {detail}") from error
                     html = await page.content()
                     body = html.encode("utf-8")
                     if len(body) > self.max_body_bytes:
