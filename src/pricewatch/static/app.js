@@ -3,9 +3,11 @@ document.querySelectorAll('form[data-confirm]').forEach(form => {
     if (!window.confirm(form.dataset.confirm)) event.preventDefault();
   });
 });
-document.querySelectorAll('form[data-auto-save-time]').forEach(form => {
-  form.querySelector('input[type="time"]').addEventListener('change', () => {
-    form.requestSubmit(form.querySelector('[data-save-time]'));
+document.querySelectorAll('.card-time-picker').forEach(picker => {
+  const input = picker.querySelector('input[type="time"]');
+  picker.querySelector('[data-cancel-time]').addEventListener('click', () => {
+    input.value = picker.dataset.savedTime;
+    picker.open = false;
   });
 });
 const productGrid = document.querySelector('.product-grid');

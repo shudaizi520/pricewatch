@@ -56,12 +56,6 @@
   margin: 0;
 }
 
-.card-schedule-form {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
 .card-control,
 .check-time {
   height: 36px;
@@ -82,18 +76,42 @@
   border-color: var(--brand);
 }
 
+.card-schedule-form {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .manual-refresh:disabled {
   cursor: wait;
   opacity: .8;
 }
 
-.refresh-glyph {
-  display: inline-block;
-  line-height: 1;
+.manual-refresh {
+  display: grid;
+  place-items: center;
 }
 
-.manual-refresh.is-checking .refresh-glyph {
+.manual-refresh svg {
+  grid-area: 1 / 1;
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.refresh-spinner,
+.manual-refresh.is-checking .refresh-icon {
+  visibility: hidden;
+}
+
+.manual-refresh.is-checking .refresh-spinner {
+  visibility: visible;
   animation: check-spin .8s linear infinite;
+  transform-origin: center center;
+}
+
+.spinner-track {
+  opacity: .2;
 }
 
 @keyframes check-spin {
@@ -101,13 +119,91 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .manual-refresh.is-checking .refresh-glyph { animation: none; }
+  .manual-refresh.is-checking .refresh-spinner { animation: none; }
+}
+
+.card-time-picker {
+  position: relative;
+}
+
+.product-card:has(.card-time-picker[open]) {
+  position: relative;
+  z-index: 2;
 }
 
 .check-time {
-  width: 108px;
-  padding: 0 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 108px;
+  padding: 0 9px;
   font-size: 13px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.check-time::-webkit-details-marker {
+  display: none;
+}
+
+.check-time svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.time-popover {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(240px, calc(100vw - 48px));
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.time-popover label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.time-popover input[type="time"] {
+  display: block;
+  width: 100%;
+  height: 42px;
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--text);
+  font-size: 15px;
+}
+
+.time-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.time-actions button[type="button"] {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.time-actions .button {
+  min-height: 34px;
+  padding: 5px 12px;
 }
 
 .auto-switch {

@@ -58,6 +58,57 @@ async def test_dashboard_uses_content_versioned_interaction_script(admin_client)
 
 
 @pytest.mark.anyio
+async def test_card_time_picker_only_submits_after_explicit_save(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/x",
+            status="paused",
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+        session.add(Setting(key=f"product_check_time:{product_id}", value_text="10:30"))
+
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    card = page.select_one(f'.product-card[data-product-id="{product_id}"]')
+    controls = card.select_one(".card-controls")
+    picker = controls.select_one("details.card-time-picker")
+    assert picker is not None
+    assert "10:30" in picker.select_one("summary").get_text(" ", strip=True)
+    form = picker.find_parent("form")
+    assert form["action"] == f"/products/{product_id}/pause"
+    assert picker.select_one('input[name="check_time"][type="time"]')["value"] == "10:30"
+    save = picker.select_one('button[type="submit"]')
+    assert save["formaction"] == f"/products/{product_id}/check-time"
+    assert save.get_text(strip=True) == "保存"
+    assert controls.select_one(".auto-switch").find_parent("form") == form
+    assert controls.select_one("[data-auto-save-time]") is None
+
+
+@pytest.mark.anyio
+async def test_card_refresh_has_centered_loading_spinner(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/x",
+                status="paused",
+            )
+        )
+
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    button = page.select_one(".product-card .manual-refresh")
+    assert button.select_one('svg.refresh-icon[viewBox="0 0 24 24"]') is not None
+    spinner = button.select_one('svg.refresh-spinner[viewBox="0 0 24 24"]')
+    assert spinner is not None
+    ring = spinner.select_one('circle[cx="12"][cy="12"]')
+    assert ring is not None
+
+
+@pytest.mark.anyio
 async def test_card_keeps_key_configuration_visible_and_folds_other_options(admin_client):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
