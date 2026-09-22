@@ -118,6 +118,7 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
     if not recipe:
         raise ValueError("请选择至少一个戴尔配置")
     last_offer: ConfiguredOffer | None = None
+    interaction_waited = False
     for group, label in recipe.items():
         catalog = await read_catalog(page)
         if label not in catalog.get(group, []):
@@ -136,6 +137,10 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
                 matching.append(wrapper)
         if len(matching) != 1:
             raise ValueError(f"戴尔配置定位失败: {group} / {label}")
+        if not interaction_waited:
+            # Dell can render the default options before its click handlers are ready.
+            await page.wait_for_timeout(15000)
+            interaction_waited = True
         accept = (
             page.get_by_role("dialog")
             .filter(has_text="Spec changes required")

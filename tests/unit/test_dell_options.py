@@ -299,6 +299,9 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
         async def evaluate(self, _script):
             return f"Dell Price ${self.price / 100:,.2f}"
 
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
         def get_by_role(self, role, name=None, exact=True):
             return Wrappers(self, name) if role == "group" else Accept()
 
@@ -319,6 +322,70 @@ async def test_each_changed_group_must_settle_before_next_click(monkeypatch):
         ({"Graphics Card": "RTX 5090"}, 399999, True),
         ({"Power Supply": "360W"}, 509999, True),
     ]
+
+
+@pytest.mark.anyio
+async def test_changed_option_waits_for_dell_interaction_before_click(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    class Locator:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        def nth(self, _index):
+            return self
+
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return "RTX 5090"
+
+        async def is_visible(self):
+            return False
+
+        async def click(self):
+            assert self.page.elapsed_ms >= 15000, "clicked before Dell interaction was ready"
+            self.page.selected = "RTX 5090"
+
+    class Page:
+        selected = "RTX 5070"
+        elapsed_ms = 0
+
+        async def content(self):
+            return json.dumps({"Graphics Card": self.selected})
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, milliseconds):
+            self.elapsed_ms += milliseconds
+
+        def get_by_role(self, *_args, **_kwargs):
+            return Locator(self)
+
+    async def catalog(_page):
+        return {"Graphics Card": ["RTX 5070", "RTX 5090"]}
+
+    async def settled(page, _recipe, _baseline_price, changed):
+        assert changed
+        return ConfiguredOffer({"Graphics Card": page.selected}, 509999)
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    monkeypatch.setattr(dell_options, "settled_offer", settled)
+
+    result = await apply_selection(Page(), {"Graphics Card": "RTX 5090"})
+    assert result.selected["Graphics Card"] == "RTX 5090"
 
 
 @pytest.mark.anyio
