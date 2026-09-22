@@ -83,7 +83,7 @@ jobs:
           test "$before" = "$(docker exec pricewatch-ci-fresh sha256sum /data/.pricewatch-secret | cut -d' ' -f1)"
           docker exec pricewatch-ci-fresh python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); page=b.new_page(); page.goto('http://127.0.0.1:8080/login'); page.get_by_label('账号').fill('owner'); page.get_by_label('密码').fill('VeryStrongSecret123!'); page.get_by_role('button',name='登录').click(); assert page.get_by_role('heading',name='商品监控').is_visible(); b.close(); p.stop()"
           secret="$(docker exec pricewatch-ci-fresh cat /data/.pricewatch-secret)"
-          if docker logs pricewatch-ci-fresh 2>&1 | grep -F "$secret"; then
+          if docker logs pricewatch-ci-fresh 2>&1 | grep -Fq "$secret"; then
             echo "Application secret appeared in container logs" >&2
             exit 1
           fi
