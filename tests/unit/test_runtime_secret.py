@@ -7,6 +7,10 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from pytest import MonkeyPatch
+
+from pricewatch import runtime_secret
+
 
 def resolve(data_dir: Path, *, configured: str | None = None) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
@@ -100,3 +104,26 @@ def test_parallel_first_starts_share_one_complete_secret(tmp_path: Path) -> None
     assert len({result.stdout for result in results}) == 1
     assert re.fullmatch(r"[0-9a-f]{64}\n", results[0].stdout)
     assert (tmp_path / ".pricewatch-secret").read_text().strip() == results[0].stdout.strip()
+
+
+def test_concurrent_creator_migrates_database_after_secret_miss(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    secret = "b" * 64
+    destination = tmp_path / ".pricewatch-secret"
+    database = tmp_path / "pricewatch.db"
+    original_read = runtime_secret._read_secret
+    first = True
+
+    def read_during_other_starter(path: Path) -> str:
+        nonlocal first
+        if first:
+            first = False
+            destination.write_text(secret)
+            destination.chmod(0o600)
+            database.write_bytes(b"migrated by another starter")
+            raise FileNotFoundError(path)
+        return original_read(path)
+
+    monkeypatch.setattr(runtime_secret, "_read_secret", read_during_other_starter)
+    assert runtime_secret.resolve_application_secret(tmp_path, None, database) == secret

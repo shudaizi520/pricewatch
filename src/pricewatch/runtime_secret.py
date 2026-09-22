@@ -53,6 +53,12 @@ def resolve_application_secret(
     except FileNotFoundError:
         pass
     if database_path.exists():
+        # Another fresh starter may have written the key and migrated the DB
+        # between our first read and this check.
+        try:
+            return _read_secret(destination)
+        except FileNotFoundError:
+            pass
         raise RuntimeError("Existing database has no application secret; restore its original key")
 
     with tempfile.NamedTemporaryFile(
