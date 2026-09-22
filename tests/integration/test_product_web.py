@@ -89,7 +89,7 @@ async def test_card_time_picker_only_submits_after_explicit_save(admin_client):
 
 @pytest.mark.anyio
 async def test_card_time_picker_discards_unsaved_time_when_closed(admin_client):
-    from playwright.async_api import async_playwright
+    from playwright.async_api import async_playwright, expect
 
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
@@ -126,7 +126,7 @@ async def test_card_time_picker_discards_unsaved_time_when_closed(admin_client):
             await picker.locator("summary").click()
             await picker.locator('input[type="time"]').fill("11:45")
             await picker.locator("summary").click()
-            assert await picker.locator('input[type="time"]').input_value() == "10:30"
+            await expect(picker.locator('input[type="time"]')).to_have_value("10:30")
         finally:
             await browser.close()
 
