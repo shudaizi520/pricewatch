@@ -49,6 +49,15 @@ async def test_dashboard_uses_content_versioned_card_styles(admin_client):
 
 
 @pytest.mark.anyio
+async def test_dashboard_uses_content_versioned_interaction_script(admin_client):
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    script = page.select_one('script[src^="/static/app.js"]')
+    assert script is not None
+    source = Path(__file__).parents[2] / "src" / "pricewatch" / "static" / "app.js"
+    assert script["src"] == f"/static/app.js?v={sha256(source.read_bytes()).hexdigest()[:12]}"
+
+
+@pytest.mark.anyio
 async def test_card_keeps_key_configuration_visible_and_folds_other_options(admin_client):
     app = admin_client._transport.app
     with app.state.session_factory.begin() as session:
@@ -563,6 +572,56 @@ async def test_each_card_time_and_auto_switch_control_monitoring_count(admin_cli
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count(Product.id)).where(Product.status == "active")) == 0
         assert session.get(Setting, f"product_check_time:{ids[0]}").value_text == "08:10"
+
+
+@pytest.mark.anyio
+async def test_auto_switch_saves_selected_time_when_enabling(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/example",
+            status="paused",
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    response = await admin_client.get("/")
+    card = BeautifulSoup(response.text, "lxml").select_one(".product-card")
+    time_input = card.select_one('input[name="check_time"]')
+    auto_switch = card.select_one('button[role="switch"]')
+    assert time_input.find_parent("form") == auto_switch.find_parent("form")
+    assert not auto_switch.has_attr("disabled")
+
+    switched = await admin_client.post(
+        f"/products/{product_id}/pause",
+        data={
+            "return_to": "dashboard",
+            "check_time": "12:47",
+            "csrf_token": csrf(response.text),
+        },
+    )
+    assert switched.status_code == 303
+    with app.state.session_factory() as session:
+        assert session.get(Product, product_id).status == "active"
+        assert session.get(Setting, f"product_check_time:{product_id}").value_text == "12:47"
+
+
+@pytest.mark.anyio
+async def test_paused_card_does_not_show_duplicate_auto_closed_badge(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Product(
+                source_site="dell-us",
+                requested_url="https://www.dell.com/en-us/shop/example",
+                status="paused",
+            )
+        )
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    card = page.select_one(".product-card")
+    assert "自动已关闭" not in card.get_text(" ", strip=True)
 
 
 @pytest.mark.anyio

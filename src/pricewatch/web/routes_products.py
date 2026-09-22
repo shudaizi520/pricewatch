@@ -427,6 +427,7 @@ async def pause_product(
     request: Request,
     product_id: int,
     return_to: str = Form("detail"),
+    check_time: str = Form(""),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
@@ -435,17 +436,30 @@ async def pause_product(
     with request.app.state.session_factory.begin() as session:
         product = session.get(Product, product_id)
         assert product is not None
+        selected_time = check_time.strip()
+        if selected_time:
+            try:
+                parse_check_time(selected_time)
+            except ValueError:
+                return RedirectResponse(f"{destination}?schedule_error=invalid", status_code=303)
+        setting = session.get(Setting, check_time_key(product_id))
+        saved_time = setting.value_text if setting is not None else None
         if product.status == "active":
             product.status = "paused"
         elif product.status == "paused":
-            setting = session.get(Setting, check_time_key(product_id))
-            if setting is None or not setting.value_text:
+            effective_time = selected_time or saved_time
+            if not effective_time:
                 return RedirectResponse(f"{destination}?schedule_error=missing", status_code=303)
-            if _time_conflicts(session, product_id, setting.value_text):
+            if _time_conflicts(session, product_id, effective_time):
                 return RedirectResponse(f"{destination}?schedule_error=conflict", status_code=303)
             product.status = "active"
         else:
             raise HTTPException(409)
+        if selected_time:
+            if setting is None:
+                session.add(Setting(key=check_time_key(product_id), value_text=selected_time))
+            else:
+                setting.value_text = selected_time
     request.app.state.scheduler.schedule_product(product_id)
     return RedirectResponse(destination, status_code=303)
 

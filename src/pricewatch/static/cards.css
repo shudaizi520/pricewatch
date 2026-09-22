@@ -31,6 +31,12 @@
   margin: 0;
 }
 
+.card-schedule-form {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .card-control,
 .check-time {
   height: 36px;

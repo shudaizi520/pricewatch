@@ -82,13 +82,21 @@ async def test_browser_failure_is_categorized():
 @pytest.mark.anyio
 async def test_browser_reports_actual_blocking_status(monkeypatch):
     class FakePage:
-        url = "https://shop.example/item"
+        url = "https://shop.example/item?token=private-query"
 
         async def route(self, *_):
             pass
 
         async def goto(self, *_args, **_kwargs):
-            return type("Response", (), {"status": 403})()
+            return type(
+                "Response",
+                (),
+                {
+                    "status": 403,
+                    "url": self.url,
+                    "headers": {"server": "edge.example", "set-cookie": "private-cookie"},
+                },
+            )()
 
     class FakeBrowser:
         async def new_context(self, **_kwargs):
@@ -119,8 +127,12 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
 
     monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
     fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
-    with pytest.raises(AcquisitionError, match="HTTP 403"):
-        await fetcher.fetch(URL("https://shop.example/item"))
+    with pytest.raises(AcquisitionError, match="HTTP 403") as caught:
+        await fetcher.fetch(URL(FakePage.url))
+    assert "shop.example" in str(caught.value)
+    assert "edge.example" in str(caught.value)
+    assert "private-query" not in str(caught.value)
+    assert "private-cookie" not in str(caught.value)
 
 
 @pytest.mark.anyio

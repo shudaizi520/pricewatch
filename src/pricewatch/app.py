@@ -91,6 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.option_catalogs = {}
     static_dir = Path(__file__).parent / "static"
     app.state.cards_css_version = sha256((static_dir / "cards.css").read_bytes()).hexdigest()[:12]
+    app.state.app_js_version = sha256((static_dir / "app.js").read_bytes()).hexdigest()[:12]
     secure_cookie = bool(
         resolved.external_url and str(resolved.external_url).startswith("https://")
     )

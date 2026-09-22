@@ -4,7 +4,9 @@ document.querySelectorAll('form[data-confirm]').forEach(form => {
   });
 });
 document.querySelectorAll('form[data-auto-save-time]').forEach(form => {
-  form.querySelector('input[type="time"]').addEventListener('change', () => form.requestSubmit());
+  form.querySelector('input[type="time"]').addEventListener('change', () => {
+    form.requestSubmit(form.querySelector('[data-save-time]'));
+  });
 });
 const productGrid = document.querySelector('.product-grid');
 if (productGrid) {

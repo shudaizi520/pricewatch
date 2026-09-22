@@ -1,5 +1,6 @@
 """Short-lived Chromium fallback with an origin-pinned network policy."""
 
+import re
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -131,8 +132,17 @@ class BrowserFetcher:
                     if response is None:
                         raise AcquisitionError("浏览器未收到商品页面响应")
                     if response.status >= 400:
+                        response_host = URL(getattr(response, "url", str(url))).host or host
+                        response_headers = getattr(response, "headers", {})
+                        server = re.sub(
+                            r"[^A-Za-z0-9._-]", "", response_headers.get("server", "")
+                        )[:48]
+                        source = f" (来源={response_host}"
+                        if server:
+                            source += f", server={server}"
+                        source += ")"
                         raise AcquisitionError(
-                            f"浏览器访问商品页面返回 HTTP {response.status}",
+                            f"浏览器访问商品页面返回 HTTP {response.status}{source}",
                             status_code=response.status,
                         )
                     if (
