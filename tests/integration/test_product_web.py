@@ -80,7 +80,9 @@ async def test_card_time_picker_only_submits_after_explicit_save(admin_client):
     assert "10:30" in picker.select_one("summary").get_text(" ", strip=True)
     form = picker.find_parent("form")
     assert form["action"] == f"/products/{product_id}/pause"
-    assert picker.select_one('input[name="check_time"][type="time"]')["value"] == "10:30"
+    assert picker.select_one('select[name="check_hour"] option[selected]')["value"] == "10"
+    assert picker.select_one('select[name="check_minute"] option[selected]')["value"] == "30"
+    assert picker.select_one('input[type="time"]') is None
     save = picker.select_one('button[type="submit"]')
     assert save["formaction"] == f"/products/{product_id}/check-time"
     assert save.get_text(strip=True) == "保存"
@@ -125,9 +127,11 @@ async def test_card_time_picker_discards_unsaved_time_when_closed(admin_client):
             await page.add_script_tag(path=str(script))
             picker = page.locator(".card-time-picker")
             await picker.locator("summary").click()
-            await picker.locator('input[type="time"]').fill("11:45")
+            await picker.locator('select[name="check_hour"]').select_option("11")
+            await picker.locator('select[name="check_minute"]').select_option("45")
             await picker.locator("summary").click()
-            await expect(picker.locator('input[type="time"]')).to_have_value("10:30")
+            await expect(picker.locator('select[name="check_hour"]')).to_have_value("10")
+            await expect(picker.locator('select[name="check_minute"]')).to_have_value("30")
         finally:
             await browser.close()
 
@@ -1014,7 +1018,8 @@ async def test_each_card_time_and_auto_switch_control_monitoring_count(admin_cli
     assert await count() == 0
     page = await admin_client.get("/")
     assert "每天 10:00" not in page.text
-    assert page.text.count('name="check_time"') == 3
+    assert page.text.count('name="check_hour"') == 3
+    assert page.text.count('name="check_minute"') == 3
     assert page.text.count('role="switch"') == 3
     for product_id, chosen in zip(ids, ("08:10", "10:20", "17:30"), strict=True):
         saved = await admin_client.post(
@@ -1060,16 +1065,19 @@ async def test_auto_switch_saves_selected_time_when_enabling(admin_client):
 
     response = await admin_client.get("/")
     card = BeautifulSoup(response.text, "lxml").select_one(".product-card")
-    time_input = card.select_one('input[name="check_time"]')
+    hour_input = card.select_one('select[name="check_hour"]')
+    minute_input = card.select_one('select[name="check_minute"]')
     auto_switch = card.select_one('button[role="switch"]')
-    assert time_input.find_parent("form") == auto_switch.find_parent("form")
+    assert hour_input.find_parent("form") == auto_switch.find_parent("form")
+    assert minute_input.find_parent("form") == auto_switch.find_parent("form")
     assert not auto_switch.has_attr("disabled")
 
     switched = await admin_client.post(
         f"/products/{product_id}/pause",
         data={
             "return_to": "dashboard",
-            "check_time": "12:47",
+            "check_hour": "12",
+            "check_minute": "47",
             "csrf_token": csrf(response.text),
         },
     )
@@ -1077,6 +1085,52 @@ async def test_auto_switch_saves_selected_time_when_enabling(admin_client):
     with app.state.session_factory() as session:
         assert session.get(Product, product_id).status == "active"
         assert session.get(Setting, f"product_check_time:{product_id}").value_text == "12:47"
+
+
+@pytest.mark.anyio
+async def test_detail_schedule_controls_save_time_and_enable_paused_product(admin_client):
+    app = admin_client._transport.app
+    with app.state.session_factory.begin() as session:
+        product = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/en-us/shop/example",
+            status="paused",
+        )
+        session.add(product)
+        session.flush()
+        product_id = product.id
+
+    response = await admin_client.get(f"/products/{product_id}")
+    page = BeautifulSoup(response.text, "lxml")
+    controls = page.select_one(".detail-schedule-form")
+    assert controls is not None
+    assert controls.select_one('select[name="check_hour"]') is not None
+    assert controls.select_one('select[name="check_minute"]') is not None
+    assert controls.select_one('button[role="switch"]') is not None
+    assert controls.select_one('button[role="switch"]').has_attr("disabled") is False
+    assert "开启自动检查" not in page.select_one(".bottom-actions").get_text(" ", strip=True)
+
+    saved = await admin_client.post(
+        f"/products/{product_id}/check-time",
+        data={
+            "return_to": "detail",
+            "check_hour": "09",
+            "check_minute": "35",
+            "csrf_token": csrf(response.text),
+        },
+    )
+    assert saved.headers["location"] == f"/products/{product_id}"
+    with app.state.session_factory() as session:
+        assert session.get(Product, product_id).status == "paused"
+        assert session.get(Setting, f"product_check_time:{product_id}").value_text == "09:35"
+
+    switched = await admin_client.post(
+        f"/products/{product_id}/pause",
+        data={"return_to": "detail", "csrf_token": csrf(response.text)},
+    )
+    assert switched.headers["location"] == f"/products/{product_id}"
+    with app.state.session_factory() as session:
+        assert session.get(Product, product_id).status == "active"
 
 
 @pytest.mark.anyio

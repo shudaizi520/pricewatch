@@ -490,31 +490,43 @@ def _time_conflicts(session: Session, product_id: int, check_time: str) -> bool:
     return False
 
 
+def _submitted_check_time(check_time: str, check_hour: str, check_minute: str) -> str:
+    """Accept the existing HH:MM API or the two-column time picker."""
+    if check_hour or check_minute:
+        return f"{check_hour}:{check_minute}"
+    return check_time.strip()
+
+
 @router.post("/products/{product_id}/check-time")
 async def product_check_time(
     request: Request,
     product_id: int,
-    check_time: str = Form(),
+    check_time: str = Form(""),
+    check_hour: str = Form(""),
+    check_minute: str = Form(""),
+    return_to: str = Form("dashboard"),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
     _product(request, product_id)
+    destination = f"/products/{product_id}" if return_to == "detail" else "/"
+    selected_time = _submitted_check_time(check_time, check_hour, check_minute)
     try:
-        parse_check_time(check_time)
+        parse_check_time(selected_time)
     except ValueError:
-        return RedirectResponse("/?schedule_error=invalid", status_code=303)
+        return RedirectResponse(f"{destination}?schedule_error=invalid", status_code=303)
     with request.app.state.session_factory.begin() as session:
         product = session.get(Product, product_id)
         assert product is not None
-        if product.status == "active" and _time_conflicts(session, product_id, check_time):
-            return RedirectResponse("/?schedule_error=conflict", status_code=303)
+        if product.status == "active" and _time_conflicts(session, product_id, selected_time):
+            return RedirectResponse(f"{destination}?schedule_error=conflict", status_code=303)
         setting = session.get(Setting, check_time_key(product_id))
         if setting is None:
-            session.add(Setting(key=check_time_key(product_id), value_text=check_time))
+            session.add(Setting(key=check_time_key(product_id), value_text=selected_time))
         else:
-            setting.value_text = check_time
+            setting.value_text = selected_time
     request.app.state.scheduler.schedule_product(product_id)
-    return RedirectResponse("/", status_code=303)
+    return RedirectResponse(destination, status_code=303)
 
 
 @router.post("/products/{product_id}/settings")
@@ -550,6 +562,8 @@ async def pause_product(
     product_id: int,
     return_to: str = Form("detail"),
     check_time: str = Form(""),
+    check_hour: str = Form(""),
+    check_minute: str = Form(""),
     submitted_csrf: str = Form(alias="csrf_token"),
 ) -> Response:
     verify_csrf(request, submitted_csrf)
@@ -558,7 +572,7 @@ async def pause_product(
     with request.app.state.session_factory.begin() as session:
         product = session.get(Product, product_id)
         assert product is not None
-        selected_time = check_time.strip()
+        selected_time = _submitted_check_time(check_time, check_hour, check_minute)
         if selected_time:
             try:
                 parse_check_time(selected_time)
