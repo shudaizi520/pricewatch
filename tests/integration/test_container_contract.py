@@ -52,6 +52,19 @@ def test_release_workflow_publishes_github_release_after_image():
     jobs = workflow["jobs"]
     assert jobs["publish"]["environment"] == "production"
     assert jobs["publish"]["permissions"] == {"contents": "read", "packages": "write"}
+    signed_tag = next(
+        step
+        for step in jobs["publish"]["steps"]
+        if step.get("name") == "Check approved signed stable tag"
+    )
+    assert "refs/heads/main" in signed_tag["run"]
+    version_check = next(
+        step
+        for step in jobs["publish"]["steps"]
+        if step.get("name") == "Validate source and installer version"
+    )
+    assert "pyproject.toml" in version_check["run"]
+    assert "compose.ghcr.yml" in version_check["run"]
     assert any(
         step.get("name") == "Publish linux/amd64 image with SBOM"
         for step in jobs["publish"]["steps"]
@@ -66,6 +79,10 @@ def test_release_workflow_publishes_github_release_after_image():
     assert "--verify-tag" in release["run"]
     assert "--latest" in release["run"]
     assert "compose.ghcr.yml" in release["run"]
+    assert "gh release upload" in release["run"]
+    assert "gh release edit" in release["run"]
+    assert "releases/latest" in release["run"]
+    assert ".assets[].name" in release["run"]
 
 
 def test_image_non_root_one_worker_and_graphical_chromium():
