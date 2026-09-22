@@ -7,7 +7,7 @@
   <title>{% block title %}PriceWatch{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/mark.svg">
   <link rel="stylesheet" href="/static/app.css">
-  <link rel="stylesheet" href="/static/cards.css">
+  <link rel="stylesheet" href="/static/cards.css?v={{ request.app.state.cards_css_version }}">
   <script src="/static/app.js" defer></script>
 </head>
 <body>

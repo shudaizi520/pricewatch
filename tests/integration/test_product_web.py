@@ -1,5 +1,6 @@
 import re
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,16 @@ async def test_dashboard_needs_login(client):
     response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_dashboard_uses_content_versioned_card_styles(admin_client):
+    page = BeautifulSoup((await admin_client.get("/")).text, "lxml")
+    stylesheet = page.select_one('link[href^="/static/cards.css"]')
+    assert stylesheet is not None
+    href = stylesheet["href"]
+    css = Path(__file__).parents[2] / "src" / "pricewatch" / "static" / "cards.css"
+    assert href == f"/static/cards.css?v={sha256(css.read_bytes()).hexdigest()[:12]}"
 
 
 @pytest.mark.anyio

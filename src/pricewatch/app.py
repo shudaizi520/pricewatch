@@ -3,6 +3,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -88,6 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.backups = backups
     app.state.previews = {}
     app.state.option_catalogs = {}
+    static_dir = Path(__file__).parent / "static"
+    app.state.cards_css_version = sha256((static_dir / "cards.css").read_bytes()).hexdigest()[:12]
     secure_cookie = bool(
         resolved.external_url and str(resolved.external_url).startswith("https://")
     )
@@ -103,7 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(products_router)
     app.include_router(settings_router)
     app.include_router(status_router)
-    app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:
