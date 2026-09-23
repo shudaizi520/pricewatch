@@ -1,5 +1,6 @@
 """Trusted observation comparison and persistent check outcomes."""
 
+import gc
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -386,4 +387,10 @@ class CheckService:
                 str(error)[:240] if isinstance(error, (AcquisitionError, ExtractionError)) else None
             )
             return self.record_failure(product_id, type(error).__name__, trigger, detail)
-        return self.accept_snapshot(product_id, snapshot, trigger=trigger)
+        else:
+            return self.accept_snapshot(product_id, snapshot, trigger=trigger)
+        finally:
+            # BeautifulSoup and lxml build cyclic DOM graphs. A price check is an infrequent,
+            # bounded job, so collect those transient graphs immediately instead of retaining
+            # them until Python's next heuristic collection.
+            gc.collect()

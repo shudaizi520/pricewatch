@@ -198,6 +198,79 @@ async def test_dell_browser_does_not_trigger_interception_403(monkeypatch, dell_
 
 
 @pytest.mark.anyio
+async def test_dell_browser_disables_heavy_background_content_without_route_interception(
+    monkeypatch,
+):
+    url = "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example"
+
+    class FakeProxy:
+        port = 43123
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePage:
+        routed = False
+
+        def __init__(self, page_url):
+            self.url = page_url
+
+        async def route(self, *_args):
+            self.routed = True
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            return None
+
+        async def content(self):
+            return "<html><body>Dell Price $3,999.99</body></html>"
+
+    page = FakePage(url)
+
+    class FakeBrowser:
+        async def new_context(self, **kwargs):
+            assert kwargs["service_workers"] == "block"
+            return self
+
+        async def new_page(self):
+            return page
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **kwargs):
+            assert "--blink-settings=imagesEnabled=false" in kwargs["args"]
+            assert "--disable-background-networking" in kwargs["args"]
+            assert "--disable-component-update" in kwargs["args"]
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr("pricewatch.fetching.browser.SafeSocksProxy", lambda *_a, **_k: FakeProxy())
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+
+    acquired = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(URL(url))
+
+    assert acquired.status == 200
+    assert page.routed is False
+
+
+@pytest.mark.anyio
 async def test_us_dell_browser_uses_configured_upstream_socks(monkeypatch):
     url = "https://www.dell.com/en-us/shop/desktops/spd/alienware-aurora/example"
     requests = []

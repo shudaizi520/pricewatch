@@ -106,6 +106,9 @@ class BrowserFetcher:
         try:
             async with AsyncExitStack() as stack:
                 launch_args = [
+                    "--blink-settings=imagesEnabled=false",
+                    "--disable-background-networking",
+                    "--disable-component-update",
                     "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
                     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
                 ]
@@ -128,7 +131,10 @@ class BrowserFetcher:
                     args=launch_args,
                 )
                 try:
-                    context = await browser.new_context(accept_downloads=False)
+                    context = await browser.new_context(
+                        accept_downloads=False,
+                        service_workers="block",
+                    )
                     page = await context.new_page()
                     configure_statuses: list[int] = []
                     configure_failures = 0

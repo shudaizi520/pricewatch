@@ -11,7 +11,7 @@ from sqlalchemy import select
 from pricewatch.db.models import Administrator, BackupRecord, Setting
 from pricewatch.services.auth import hash_password, verify_password
 from pricewatch.services.crypto import SecretBox
-from pricewatch.services.notifications import NotificationService, feishu_apprise_url
+from pricewatch.services.notifications import NotificationService, normalize_feishu_destination
 from pricewatch.web.dependencies import csrf_token, require_admin, verify_csrf
 from pricewatch.web.forms import FormError, validate_password
 from pricewatch.web.timezone import beijing_label
@@ -70,7 +70,7 @@ async def save_settings(
     if not webhook:
         raise HTTPException(422, "请先填写飞书 Webhook")
     try:
-        feishu_apprise_url(webhook)
+        normalize_feishu_destination(webhook)
     except ValueError as error:
         raise HTTPException(422, "飞书 Webhook 格式不正确") from error
     with request.app.state.session_factory.begin() as session:
