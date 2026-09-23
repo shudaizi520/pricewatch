@@ -11,7 +11,6 @@ distribution; the image build should be checked using the CI license inventory b
 | Package | License | Source |
 |---|---|---|
 | Alembic | MIT | https://github.com/sqlalchemy/alembic |
-| Apprise (Feishu delivery) | MIT | https://github.com/caronc/apprise |
 | APScheduler | MIT | https://github.com/agronholm/apscheduler |
 | argon2-cffi | MIT | https://github.com/hynek/argon2-cffi |
 | Beautiful Soup | MIT | https://www.crummy.com/software/BeautifulSoup/ |

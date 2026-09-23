@@ -1,3 +1,5 @@
+import gc
+import weakref
 from datetime import UTC, datetime
 
 import pytest
@@ -291,3 +293,32 @@ async def test_wrong_dell_selection_never_overwrites_trusted_price(check_service
         ).all()
         assert len(rows) == 1
         assert rows[0].price_minor == 509999
+
+
+@pytest.mark.anyio
+async def test_completed_check_collects_transient_parser_cycles(check_service):
+    service, _, product_id = check_service
+    references = []
+
+    class ParserNode:
+        pass
+
+    class CyclicPipeline:
+        async def acquire(self, _url, _adapter, dell_selection=None):
+            assert dell_selection is None
+            node = ParserNode()
+            node.parent = node
+            references.append(weakref.ref(node))
+            return None, snapshot()
+
+    service.pipeline = CyclicPipeline()
+    collection_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        outcome = await service.check_product(product_id, "manual")
+        assert outcome.status == "ok"
+        assert references[0]() is None
+    finally:
+        if collection_was_enabled:
+            gc.enable()
+        gc.collect()

@@ -8,7 +8,7 @@ from pricewatch.db.base import Base
 from pricewatch.db.models import NotificationDelivery, Product
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.events import DomainEvent
-from pricewatch.services.notifications import NotificationService, feishu_apprise_url
+from pricewatch.services.notifications import NotificationService, normalize_feishu_destination
 
 
 def test_signed_robot_payload_uses_feishu_hmac(monkeypatch, environment):
@@ -48,6 +48,115 @@ def test_signed_robot_payload_uses_feishu_hmac(monkeypatch, environment):
     assert payload["sign"] == expected
     assert payload["msg_type"] == "text"
     assert "飞书通知已连接" in payload["content"]["text"]
+
+
+def test_unsigned_robot_posts_directly_to_official_feishu_webhook(monkeypatch, environment):
+    from pricewatch.services.notifications import FeishuTransport
+
+    factory, _ = environment
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, *, json, timeout, follow_redirects):
+        captured.update(url=url, payload=json, timeout=timeout, redirects=follow_redirects)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    webhook = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    service = NotificationService(factory, SecretStr(webhook))
+
+    assert isinstance(service.transport, FeishuTransport)
+    assert service.test_feishu().sent
+    assert captured == {
+        "url": webhook,
+        "payload": {
+            "msg_type": "text",
+            "content": {"text": "PriceWatch 测试\n飞书通知已连接。"},
+        },
+        "timeout": 10,
+        "redirects": False,
+    }
+
+
+def test_manual_test_can_override_the_saved_feishu_destination(monkeypatch, environment):
+    factory, _ = environment
+    urls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, **_kwargs):
+        urls.append(url)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    saved = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    override = "https://open.feishu.cn/open-apis/bot/v2/hook/fedcba9876543210fedcba9876543210"
+    service = NotificationService(factory, SecretStr(saved))
+
+    assert service.test_feishu(SecretStr(override)).sent
+    assert urls == [override]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        "https://open.larksuite.com/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef",
+        "HTTPS://open.larksuite.com/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef",
+    ],
+)
+def test_manual_test_preserves_the_explicit_lark_endpoint(
+    monkeypatch, environment, override
+):
+    factory, _ = environment
+    urls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, **_kwargs):
+        urls.append(url)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    saved = "https://open.feishu.cn/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    service = NotificationService(factory, SecretStr(saved))
+
+    assert service.test_feishu(SecretStr(override)).sent
+    assert urls == [override]
+
+
+def test_saved_mixed_case_lark_endpoint_is_preserved(monkeypatch, environment):
+    factory, _ = environment
+    urls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"code": 0}
+
+    def fake_post(url, **_kwargs):
+        urls.append(url)
+        return Response()
+
+    monkeypatch.setattr("pricewatch.services.notifications.httpx.post", fake_post)
+    saved = "HTTPS://open.larksuite.com/open-apis/bot/v2/hook/0123456789abcdef0123456789abcdef"
+    service = NotificationService(factory, SecretStr(saved))
+
+    assert service.test_feishu().sent
+    assert urls == [saved]
 
 
 class FakeTransport:
@@ -93,11 +202,11 @@ def price_event(product_id):
 def test_feishu_url_validates_host_and_token():
     token = "0123456789abcdef0123456789abcdef"
     assert (
-        feishu_apprise_url(f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}")
+        normalize_feishu_destination(f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}")
         == f"feishu://{token}"
     )
     with pytest.raises(ValueError):
-        feishu_apprise_url(f"https://example.org/open-apis/bot/v2/hook/{token}")
+        normalize_feishu_destination(f"https://example.org/open-apis/bot/v2/hook/{token}")
 
 
 def test_manual_test_redacts_webhook(environment, caplog):

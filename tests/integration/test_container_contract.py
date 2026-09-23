@@ -31,7 +31,7 @@ def test_ghcr_compose_installs_without_source_or_manual_secret():
     config = yaml.safe_load((ROOT / "compose.ghcr.yml").read_text())
     assert set(config["services"]) == {"pricewatch"}
     service = config["services"]["pricewatch"]
-    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.4"
+    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.5"
     assert "build" not in service
     assert service["volumes"] == ["pricewatch-data:/data"]
     assert "pricewatch-data" in config["volumes"]
@@ -43,8 +43,8 @@ def test_ghcr_compose_installs_without_source_or_manual_secret():
 
 def test_package_and_health_version_match_source_release():
     package = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    assert package["project"]["version"] == "1.0.4"
-    assert __version__ == "1.0.4"
+    assert package["project"]["version"] == "1.0.5"
+    assert __version__ == "1.0.5"
 
 
 def test_release_workflow_publishes_github_release_after_image():

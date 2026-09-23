@@ -1,4 +1,4 @@
-"""Deduplicated Feishu delivery through Apprise."""
+"""Deduplicated delivery to official Feishu/Lark robot webhooks."""
 
 import base64
 import hashlib
@@ -11,7 +11,6 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 import httpx
-from apprise import Apprise
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -24,8 +23,8 @@ _TOKEN = re.compile(r"[A-Za-z0-9_-]{20,128}\Z")
 _FEISHU_HOSTS = {"open.feishu.cn", "open.larksuite.com"}
 
 
-def feishu_apprise_url(webhook: str) -> str:
-    """Accept only the official webhook origin or an Apprise Feishu token URL."""
+def normalize_feishu_destination(webhook: str) -> str:
+    """Accept only an official webhook origin or the compact Feishu token form."""
     parsed = urlsplit(webhook)
     if parsed.scheme == "feishu" and parsed.netloc and not parsed.path and not parsed.query:
         token = parsed.netloc
@@ -51,46 +50,60 @@ class NotificationTransport(Protocol):
     def send(self, destination: str, title: str, body: str) -> bool: ...
 
 
-class AppriseTransport:
-    def send(self, destination: str, title: str, body: str) -> bool:
-        notifier = Apprise()
-        if not notifier.add(destination):
-            return False
-        return bool(notifier.notify(title=title, body=body))
+class FeishuTransport:
+    """Send directly to the official Feishu/Lark robot endpoint."""
 
-
-class FeishuSignedTransport:
-    """Use the official robot signing fields when signature verification is enabled."""
-
-    def __init__(self, webhook: str, secret: SecretStr) -> None:
-        token_url = feishu_apprise_url(webhook)
+    def __init__(self, webhook: str) -> None:
+        token_url = normalize_feishu_destination(webhook)
         token = token_url.removeprefix("feishu://")
+        self.destination = token_url
         self.webhook = (
             webhook
-            if webhook.startswith("https://")
+            if urlsplit(webhook).scheme.lower() == "https"
             else f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
         )
-        self.secret = secret
+
+    def payload(self, title: str, body: str) -> dict[str, object]:
+        return {"msg_type": "text", "content": {"text": f"{title}\n{body}"}}
 
     def send(self, destination: str, title: str, body: str) -> bool:
-        timestamp = str(int(time.time()))
-        key = f"{timestamp}\n{self.secret.get_secret_value()}".encode()
-        signature = base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode()
+        normalized = normalize_feishu_destination(destination)
+        if urlsplit(destination).scheme.lower() == "https":
+            endpoint = destination
+        elif normalized == self.destination:
+            endpoint = self.webhook
+        else:
+            token = normalized.removeprefix("feishu://")
+            endpoint = f"https://open.feishu.cn/open-apis/bot/v2/hook/{token}"
         try:
             response = httpx.post(
-                self.webhook,
-                json={
-                    "timestamp": timestamp,
-                    "sign": signature,
-                    "msg_type": "text",
-                    "content": {"text": f"{title}\n{body}"},
-                },
+                endpoint,
+                json=self.payload(title, body),
                 timeout=10,
                 follow_redirects=False,
             )
             return response.status_code == 200 and response.json().get("code") == 0
         except (httpx.HTTPError, ValueError, TypeError):
             return False
+
+
+class FeishuSignedTransport(FeishuTransport):
+    """Use the official robot signing fields when signature verification is enabled."""
+
+    def __init__(self, webhook: str, secret: SecretStr) -> None:
+        super().__init__(webhook)
+        self.secret = secret
+
+    def payload(self, title: str, body: str) -> dict[str, object]:
+        timestamp = str(int(time.time()))
+        key = f"{timestamp}\n{self.secret.get_secret_value()}".encode()
+        signature = base64.b64encode(hmac.new(key, b"", hashlib.sha256).digest()).decode()
+        return {
+            "timestamp": timestamp,
+            "sign": signature,
+            "msg_type": "text",
+            "content": {"text": f"{title}\n{body}"},
+        }
 
 
 @dataclass(frozen=True)
@@ -191,15 +204,16 @@ class NotificationService:
         signing_secret: SecretStr | None = None,
     ) -> None:
         self.factory = factory
-        self.destination = feishu_apprise_url(webhook.get_secret_value())
+        self.destination = normalize_feishu_destination(webhook.get_secret_value())
         self.transport = transport or (
             FeishuSignedTransport(webhook.get_secret_value(), signing_secret)
             if signing_secret is not None
-            else AppriseTransport()
+            else FeishuTransport(webhook.get_secret_value())
         )
 
     def test_feishu(self, webhook: SecretStr | None = None) -> DeliveryResult:
-        target = feishu_apprise_url(webhook.get_secret_value()) if webhook else self.destination
+        target = webhook.get_secret_value() if webhook else self.destination
+        normalize_feishu_destination(target)
         try:
             sent = self.transport.send(target, "PriceWatch 测试", "飞书通知已连接。")
         except Exception:
