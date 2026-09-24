@@ -571,3 +571,192 @@ async def test_late_spec_dependency_dialog_is_accepted(monkeypatch):
     result = await apply_selection(page, {"Graphics Card": "RTX 5090"})
     assert result.price_minor == 509999
     assert page.polls >= 4
+
+
+@pytest.mark.anyio
+async def test_current_dell_selection_modal_button_is_accepted(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    class ModernAccept:
+        def __init__(self, page):
+            self.page = page
+
+        async def is_visible(self):
+            return self.page.clicked and not self.page.accepted
+
+        async def click(self):
+            self.page.accepted = True
+            self.page.selected = "RTX 5090"
+
+    class NeverVisible:
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+        async def is_visible(self):
+            return False
+
+    class Option:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        def nth(self, _index):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return "RTX 5090"
+
+        async def get_attribute(self, _name):
+            return "GPU-5090"
+
+        async def click(self):
+            self.page.clicked = True
+
+    class Page:
+        def __init__(self):
+            self.selected = "RTX 5080"
+            self.clicked = False
+            self.accepted = False
+
+        async def content(self):
+            return json.dumps({"Graphics Card": self.selected})
+
+        async def evaluate(self, _script):
+            return "Dell Price $5,699.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def locator(self, selector):
+            assert selector == "#selection-modal-change-btn"
+            return ModernAccept(self)
+
+        def get_by_role(self, role, **_kwargs):
+            return Option(self) if role == "group" else NeverVisible()
+
+    async def catalog(_page):
+        return {"Graphics Card": ["RTX 5080", "RTX 5090"]}
+
+    async def quote(page, _recipe, _baseline, changed, quote_responses):
+        assert changed
+        return ConfiguredOffer({"Graphics Card": page.selected}, 719999)
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    monkeypatch.setattr(dell_options, "settled_offer", quote)
+
+    page = Page()
+    result = await apply_selection(page, {"Graphics Card": "RTX 5090"})
+
+    assert page.accepted is True
+    assert result.selected == {"Graphics Card": "RTX 5090"}
+
+
+@pytest.mark.anyio
+async def test_option_click_retries_once_when_first_click_emits_no_request(monkeypatch):
+    from pricewatch.fetching import dell_options
+
+    class Request:
+        url = "https://www.dell.com/shopapi/unifiedpd/configure/en-us/sku"
+        post_data = json.dumps({"optionId": "GPU-5090"})
+
+    class Response:
+        url = Request.url
+        status = 200
+
+        def __init__(self, request):
+            self.request = request
+
+        async def finished(self):
+            return None
+
+    class HiddenModal:
+        def filter(self, **_kwargs):
+            return self
+
+        def get_by_role(self, *_args, **_kwargs):
+            return self
+
+        async def is_visible(self):
+            return False
+
+    class Option:
+        def __init__(self, page):
+            self.page = page
+
+        def locator(self, _selector):
+            return self
+
+        def nth(self, _index):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def inner_text(self):
+            return "RTX 5090"
+
+        async def get_attribute(self, _name):
+            return "GPU-5090"
+
+        async def click(self):
+            self.page.clicks += 1
+            if self.page.clicks == 2:
+                request = Request()
+                self.page.listeners["request"](request)
+                self.page.selected = "RTX 5090"
+                self.page.listeners["response"](Response(request))
+
+    class Page:
+        def __init__(self):
+            self.selected = "RTX 5080"
+            self.clicks = 0
+            self.listeners = {}
+
+        async def content(self):
+            return json.dumps({"Graphics Card": self.selected})
+
+        async def evaluate(self, _script):
+            return "Dell Price $5,699.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def locator(self, selector):
+            assert selector == "#selection-modal-change-btn"
+            return HiddenModal()
+
+        def get_by_role(self, role, **_kwargs):
+            return Option(self) if role == "group" else HiddenModal()
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        def remove_listener(self, name, _callback):
+            self.listeners.pop(name, None)
+
+    async def catalog(_page):
+        return {"Graphics Card": ["RTX 5080", "RTX 5090"]}
+
+    async def quote(page, _recipe, _baseline, changed, quote_responses):
+        assert changed
+        assert len(quote_responses) == 1
+        return ConfiguredOffer({"Graphics Card": page.selected}, 719999)
+
+    monkeypatch.setattr(dell_options, "read_catalog", catalog)
+    monkeypatch.setattr(dell_options, "selected_from_html", json.loads)
+    monkeypatch.setattr(dell_options, "settled_offer", quote)
+
+    page = Page()
+    result = await apply_selection(page, {"Graphics Card": "RTX 5090"})
+
+    assert page.clicks == 2
+    assert result.selected == {"Graphics Card": "RTX 5090"}

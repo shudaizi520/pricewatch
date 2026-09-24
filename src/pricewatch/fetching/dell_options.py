@@ -143,29 +143,38 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
         button = matching[0].locator('[role="button"]')
         get_attribute = getattr(button, "get_attribute", None)
         option_id = await get_attribute("data-option-id") if callable(get_attribute) else None
-        accept = (
+        legacy_accept = (
             page.get_by_role("dialog")
             .filter(has_text="Spec changes required")
             .get_by_role("button", name="Accept", exact=True)
         )
-
-        async def choose_option(
-            button: Locator = button,
-            dialog: Locator = accept,
-            option_group: str = group,
-            option_label: str = label,
-        ) -> None:
-            await button.click()
-            for _ in range(40):
-                if await dialog.is_visible():
-                    await dialog.click()
-                if selected_from_html(await page.content()).get(option_group) == option_label:
-                    return
-                await page.wait_for_timeout(500)
-            raise ValueError(f"戴尔没有完成配置切换: {option_group} / {option_label}")
+        page_locator = getattr(page, "locator", None)
+        current_accept = (
+            page_locator("#selection-modal-change-btn") if callable(page_locator) else None
+        )
+        accept_buttons = [button for button in (current_accept, legacy_accept) if button]
 
         quote_responses: list[Response] = []
         configure_requests: list[object] = []
+
+        async def choose_option(
+            button: Locator = button,
+            dialogs: list[Locator] = accept_buttons,
+            option_group: str = group,
+            option_label: str = label,
+            requests: list[object] = configure_requests,
+        ) -> None:
+            await button.click()
+            for poll in range(40):
+                for dialog in dialogs:
+                    if await dialog.is_visible():
+                        await dialog.click()
+                if selected_from_html(await page.content()).get(option_group) == option_label:
+                    return
+                if poll == 19 and not requests:
+                    await button.click()
+                await page.wait_for_timeout(500)
+            raise ValueError(f"戴尔没有完成配置切换: {option_group} / {option_label}")
 
         def record_request(request: object, requests: list[object] = configure_requests) -> None:
             if "/shopapi/unifiedpd/configure/" in str(getattr(request, "url", "")):

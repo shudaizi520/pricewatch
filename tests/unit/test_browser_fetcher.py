@@ -9,7 +9,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pricewatch.adapters.base import ExtractionError
 from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher, navigate_with_retry
 from pricewatch.fetching.http import AcquisitionError
-from pricewatch.fetching.types import AcquiredPage
+from pricewatch.fetching.types import AcquiredPage, ConfiguredOffer
 
 
 class FakeRequest:
@@ -268,6 +268,81 @@ async def test_dell_browser_disables_heavy_background_content_without_route_inte
 
     assert acquired.status == 200
     assert page.routed is False
+
+
+@pytest.mark.anyio
+async def test_dell_browser_waits_for_configuration_runtime_before_applying_recipe(monkeypatch):
+    url = "https://www.dell.com/en-us/shop/desktops/spd/alienwarearea51aat2265"
+
+    class FakeProxy:
+        port = 43123
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class FakePage:
+        def __init__(self):
+            self.url = url
+            self.waited_scripts = []
+            self.listeners = {}
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, script, **_kwargs):
+            self.waited_scripts.append(script)
+
+        async def content(self):
+            return "<html><body>Dell Price $7,199.99</body></html>"
+
+    page = FakePage()
+
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return page
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def apply_after_runtime(target_page, recipe):
+        assert target_page.waited_scripts[-1].count("detailed-option") == 1
+        assert recipe == {"Graphics Card": "RTX 5090"}
+        return ConfiguredOffer(recipe, 719999)
+
+    monkeypatch.setattr("pricewatch.fetching.browser.SafeSocksProxy", lambda *_a, **_k: FakeProxy())
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    monkeypatch.setattr("pricewatch.fetching.browser.apply_selection", apply_after_runtime)
+
+    result = await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(
+        URL(url), dell_selection={"Graphics Card": "RTX 5090"}
+    )
+
+    assert len(page.waited_scripts) == 2
+    assert result.configured_offer == ConfiguredOffer({"Graphics Card": "RTX 5090"}, 719999)
 
 
 @pytest.mark.anyio

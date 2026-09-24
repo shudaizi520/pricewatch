@@ -39,6 +39,14 @@ DELL_READY_SCRIPT = r"""() => {
   return Math.abs(Number(offer.price) - Number(visible[1].replaceAll(',', ''))) < 0.005;
 }"""
 
+DELL_CONFIG_READY_SCRIPT = r"""() => {
+  const jquery = window.jQuery;
+  const events = jquery?._data?.(document, 'events');
+  return Boolean(events?.click?.some(event =>
+    event.selector?.includes('.detailed-option')
+  ));
+}"""
+
 
 async def navigate_with_retry(page: Page, url: str) -> Response | None:
     try:
@@ -183,7 +191,13 @@ class BrowserFetcher:
                     configured_offer = None
                     if dell_selection is not None:
                         try:
+                            await page.wait_for_function(
+                                DELL_CONFIG_READY_SCRIPT,
+                                timeout=15000,
+                            )
                             configured_offer = await apply_selection(page, dell_selection)
+                        except PlaywrightTimeoutError as error:
+                            raise AcquisitionError("戴尔配置程序尚未完整加载") from error
                         except ValueError as error:
                             if configure_statuses:
                                 detail = f"配置接口 HTTP {configure_statuses[-1]}"
