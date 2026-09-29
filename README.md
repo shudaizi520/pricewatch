@@ -6,7 +6,7 @@
 
 ## 从 GitHub 镜像空白安装
 
-`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.6`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
+`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.7`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
 
 1. 把 [compose.ghcr.yml](compose.ghcr.yml) 保存到一个新目录，在该目录运行 `docker compose -f compose.ghcr.yml pull`，再运行 `docker compose -f compose.ghcr.yml up -d`。
 2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；空白安装打开首页会自动进入创建管理员页面，首次填写账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
@@ -36,6 +36,8 @@
 
 每张卡片可以设置自己的每日检查时间（北京时间），自动开关只控制这件商品；同一检查时间不能同时用于两件开启自动检查的商品。卡片上的刷新图标只手动检查该商品；“状态”页显示上次/下次检查及最近记录。最多建议监控十件。戴尔页面链接变化时，应用验证 SKU 与配置后才更新可信链接；有歧义会暂停比较并提示人工确认。其他商店识别属于尽力支持，不保证网页都能抓到。
 
+自动监控开启的商品首次检查失败后会在 30 分钟后重试一次；重试仍失败才发送飞书提醒，之后继续按原每日时间检查而不重复轰炸。后续首次成功时会发送“检查已恢复”。暂停自动监控的商品不会因手动刷新失败而安排后台重试。
+
 目标价仅在价格变化并首次跌破所设阈值时，附加在该次价格提醒中；设置时如果当前价已低于目标，不会因为价格没变而补发提醒。
 
 ## 备份、恢复与保留时间
@@ -61,7 +63,7 @@
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.6`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.7`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
 
 CI 会完整报告镜像的高危/严重漏洞，并阻止任何已有修复版本却尚未升级的漏洞。2026-09-21 的试构建仍有 56 项 Debian 系统包告警（其中 1 项严重），扫描器尚未列出修复版本。这不是“零漏洞”；待上游发布修复后应及时重建和升级镜像。实机验收期间只应经受信任的局域网或反代访问，不应直接把 8080 暴露到公网。
 

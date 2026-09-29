@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.db.models import CheckRun, Product, Setting
-from pricewatch.services.checks import CheckTrigger
+from pricewatch.services.checks import FAILURE_RETRY_DELAY, CheckTrigger
 
 _BEIJING = ZoneInfo("Asia/Shanghai")
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +70,15 @@ class SchedulerService:
                 if setting is None or not setting.value_text:
                     product.status = "paused"
                     product.next_check_at = None
+                elif product.consecutive_failures == 1:
+                    retry_at = product.next_check_at
+                    if retry_at is not None and retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=UTC)
+                    product.next_check_at = (
+                        retry_at
+                        if retry_at is not None and retry_at <= now + FAILURE_RETRY_DELAY
+                        else now + FAILURE_RETRY_DELAY
+                    )
                 else:
                     product.next_check_at = next_due(now, setting.value_text)
         self.worker = asyncio.create_task(self._run())
@@ -147,21 +156,28 @@ class SchedulerService:
         self, product_id: int, trigger: CheckTrigger, previous_run_id: int | None,
         error: Exception,
     ) -> None:
-        with self.factory.begin() as session:
-            product = session.get(Product, product_id)
-            if product is None:
-                return
+        with self.factory() as session:
             latest_run_id = session.scalar(
                 select(CheckRun.id)
                 .where(CheckRun.product_id == product_id)
                 .order_by(CheckRun.id.desc())
                 .limit(1)
             )
-            if latest_run_id != previous_run_id:
+        if latest_run_id != previous_run_id:
+            return
+        failure_recorder = getattr(self.checker, "record_failure", None)
+        if callable(failure_recorder):
+            failure_recorder(product_id, type(error).__name__, trigger)
+            return
+        with self.factory.begin() as session:
+            product = session.get(Product, product_id)
+            if product is None:
                 return
             now = datetime.now(UTC)
             product.consecutive_failures += 1
             product.last_checked_at = now
+            if product.consecutive_failures == 1 and product.status == "active":
+                product.next_check_at = now + FAILURE_RETRY_DELAY
             session.add(
                 CheckRun(
                     product_id=product_id,
@@ -190,6 +206,15 @@ class SchedulerService:
                 previous_run_id = self._latest_run_id(product_id)
                 actual_trigger = "manual" if job.manual_requested else trigger
                 result = await self.checker.check_product(product_id, actual_trigger)
+                with self.factory() as session:
+                    product = session.get(Product, product_id)
+                    keep_failure_retry = (
+                        product is not None
+                        and product.status == "active"
+                        and product.consecutive_failures == 1
+                    )
+                if product is not None and not keep_failure_retry:
+                    self.schedule_product(product_id)
                 if not job.future.done():
                     job.future.set_result(result)
             except asyncio.CancelledError:

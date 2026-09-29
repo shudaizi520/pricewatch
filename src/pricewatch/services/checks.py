@@ -3,7 +3,7 @@
 import gc
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from httpx import URL
@@ -20,6 +20,7 @@ from pricewatch.fetching.http import AcquisitionError
 from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
+FAILURE_RETRY_DELAY = timedelta(minutes=30)
 
 
 def event_key(event: DomainEvent) -> str:
@@ -328,10 +329,21 @@ class CheckService:
                 raise LookupError("Product not found")
             product.consecutive_failures += 1
             product.last_checked_at = now
-            if product.consecutive_failures == 3 and not product.failure_reported:
+            if product.consecutive_failures == 1 and product.status == "active":
+                product.next_check_at = now + FAILURE_RETRY_DELAY
+            if product.consecutive_failures >= 2 and not product.failure_reported:
                 product.failure_reported = True
                 events.append(
-                    DomainEvent(product_id, "check_failed", now, {}, {"category": category})
+                    DomainEvent(
+                        product_id,
+                        "check_failed",
+                        now,
+                        {},
+                        {
+                            "category": category,
+                            "detail": error_message[:240] if error_message else None,
+                        },
+                    )
                 )
             session.add(
                 CheckRun(

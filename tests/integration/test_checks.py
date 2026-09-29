@@ -3,6 +3,7 @@ import weakref
 from datetime import UTC, datetime
 
 import pytest
+from freezegun import freeze_time
 from sqlalchemy import func, select
 
 from pricewatch.db.base import Base
@@ -147,20 +148,42 @@ def test_redirect_updates_canonical_url_only_when_identity_matches(check_service
     assert outcome.product.canonical_url.endswith("/sku_01")
 
 
-def test_failure_alerts_once_at_three_and_recovers_once(check_service):
+@freeze_time("2026-09-29 00:00:00")
+def test_failure_retries_after_thirty_minutes_then_alerts_once_and_recovers_once(
+    check_service,
+):
     service, factory, product_id = check_service
     service.accept_snapshot(product_id, snapshot())
-    assert service.record_failure(product_id, "blocked").events == []
-    assert service.record_failure(product_id, "blocked").events == []
-    assert [event.kind for event in service.record_failure(product_id, "blocked").events] == [
-        "check_failed"
-    ]
+    first = service.record_failure(product_id, "blocked", error_message="页面访问超时")
+    assert first.events == []
+    assert first.product.next_check_at == datetime(2026, 9, 29, 0, 30, tzinfo=UTC)
+
+    second = service.record_failure(product_id, "blocked", error_message="页面访问超时")
+    assert [event.kind for event in second.events] == ["check_failed"]
     assert service.record_failure(product_id, "blocked").events == []
     assert [event.kind for event in service.accept_snapshot(product_id, snapshot()).events] == [
         "check_recovered"
     ]
     with factory() as session:
         assert session.scalar(select(func.count(Observation.id))) == 1
+        alert = session.scalar(
+            select(NotificationDelivery).where(NotificationDelivery.event_type == "check_failed")
+        )
+        assert alert is not None
+        assert "检查重试失败" in alert.message_text
+        assert "失败原因: blocked · 页面访问超时" in alert.message_text
+
+
+def test_upgrade_reports_a_preexisting_second_failure_on_the_next_failure(check_service):
+    service, factory, product_id = check_service
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.consecutive_failures = 2
+        product.failure_reported = False
+
+    outcome = service.record_failure(product_id, "blocked")
+
+    assert [event.kind for event in outcome.events] == ["check_failed"]
 
 
 def test_generic_without_sku_pauses_if_product_name_changes(settings):
