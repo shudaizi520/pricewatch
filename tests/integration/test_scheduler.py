@@ -1,7 +1,8 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from freezegun import freeze_time
 
 from pricewatch.db.base import Base
 from pricewatch.db.models import CheckRun, Product, Setting
@@ -184,6 +185,12 @@ async def test_unexpected_worker_error_records_failed_scheduled_check(settings):
             assert runs[-1].error_category == "RuntimeError"
             assert runs[-1].error_message is None
             assert product is not None and product.last_checked_at is not None
+            assert product.next_check_at is not None
+            assert (
+                product.next_check_at.replace(tzinfo=UTC)
+                - product.last_checked_at.replace(tzinfo=UTC)
+                == timedelta(minutes=30)
+            )
     finally:
         await scheduler.stop()
         engine.dispose()
@@ -269,6 +276,79 @@ async def test_restart_schedules_only_product_with_selected_time(settings):
             expected = next_due(datetime.now(UTC), "16:20")
             assert refreshed.next_check_at.replace(tzinfo=UTC) == expected
             assert refreshed.status == "active"
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+@freeze_time("2026-09-29 00:10:00", real_asyncio=True)
+async def test_restart_preserves_pending_failure_retry(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    retry_at = datetime(2026, 9, 29, 0, 30, tzinfo=UTC)
+    with factory.begin() as session:
+        item = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/x",
+            consecutive_failures=1,
+            next_check_at=retry_at,
+        )
+        session.add(item)
+        session.flush()
+        identifier = item.id
+        session.add(Setting(key=f"product_check_time:{identifier}", value_text="08:00"))
+
+    scheduler = SchedulerService(factory, None)
+    scheduler.start()
+    try:
+        with factory() as session:
+            refreshed = session.get(Product, identifier)
+            assert refreshed is not None
+            assert refreshed.next_check_at.replace(tzinfo=UTC) == retry_at
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+@freeze_time("2026-09-29 00:10:00", real_asyncio=True)
+async def test_success_before_retry_restores_daily_schedule(settings):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        item = Product(
+            source_site="dell-us",
+            requested_url="https://www.dell.com/x",
+            consecutive_failures=1,
+            next_check_at=datetime(2026, 9, 29, 0, 30, tzinfo=UTC),
+        )
+        session.add(item)
+        session.flush()
+        identifier = item.id
+        session.add(Setting(key=f"product_check_time:{identifier}", value_text="16:20"))
+
+    class RecoveringChecker:
+        async def check_product(self, product_id, trigger):
+            with factory.begin() as session:
+                product = session.get(Product, product_id)
+                product.consecutive_failures = 0
+            return product_id
+
+    scheduler = SchedulerService(factory, RecoveringChecker())
+    scheduler.start()
+    try:
+        with factory.begin() as session:
+            product = session.get(Product, identifier)
+            product.next_check_at = datetime(2026, 9, 29, 0, 30, tzinfo=UTC)
+        job = scheduler.request_check(identifier, "manual")
+        assert await asyncio.wait_for(job.future, 1) == identifier
+        with factory() as session:
+            refreshed = session.get(Product, identifier)
+            assert refreshed is not None
+            assert refreshed.next_check_at.replace(tzinfo=UTC) == datetime(
+                2026, 9, 29, 8, 20, tzinfo=UTC
+            )
     finally:
         await scheduler.stop()
         engine.dispose()

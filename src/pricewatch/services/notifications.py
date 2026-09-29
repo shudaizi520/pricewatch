@@ -149,7 +149,7 @@ def format_message(event: DomainEvent, product: Product) -> str:
         "offer_changed": "优惠变化",
         "stock_changed": "库存变化",
         "configuration_changed": "配置变化 请确认",
-        "check_failed": "连续检查失败",
+        "check_failed": "检查重试失败",
         "check_recovered": "检查已恢复",
     }
     lines = [f"{name} · {labels.get(event.kind, event.kind)}", "", *config, ""]
@@ -189,6 +189,10 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if old_description or new_description:
             lines.append(f"原配置: {old_description or '未知'}")
             lines.append(f"新配置: {new_description or '未知'}")
+    if event.kind == "check_failed":
+        category = event.new.get("category") or "未知错误"
+        detail = event.new.get("detail")
+        lines.append(f"失败原因: {category}" + (f" · {detail}" if detail else ""))
     lines.extend(
         [f"北京时间: {time}", f"商品链接: {product.canonical_url or product.requested_url}"]
     )
