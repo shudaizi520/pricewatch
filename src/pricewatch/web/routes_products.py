@@ -270,7 +270,7 @@ async def product_options(
         pipeline = request.app.state.check_service.pipeline
         if pipeline is None:
             raise ValueError("检查器尚未启动")
-        acquired = await pipeline.browser.fetch(target)
+        acquired = await pipeline.browser.fetch(target, dell_catalog=True)
         catalog = catalog_from_html(acquired.html)
         if not catalog:
             raise ValueError("戴尔页面未提供可选配置")

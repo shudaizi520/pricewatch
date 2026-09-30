@@ -766,9 +766,10 @@ async def test_same_url_can_create_distinct_selected_configurations(admin_client
     address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
 
     class FakeBrowser:
-        async def fetch(self, _url):
+        async def fetch(self, _url, dell_catalog=False):
             from pricewatch.fetching.types import AcquiredPage
 
+            assert dell_catalog is True
             return AcquiredPage(
                 address,
                 address,
@@ -849,7 +850,8 @@ async def test_keyboard_options_are_visible_and_saved_with_card(admin_client, mo
     )
 
     class Browser:
-        async def fetch(self, _url):
+        async def fetch(self, _url, dell_catalog=False):
+            assert dell_catalog is True
             return AcquiredPage(
                 address, address, 200, b"<html></html>", {}, "browser", datetime.now(UTC)
             )

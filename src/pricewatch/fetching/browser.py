@@ -39,6 +39,15 @@ DELL_READY_SCRIPT = r"""() => {
   return Math.abs(Number(offer.price) - Number(visible[1].replaceAll(',', ''))) < 0.005;
 }"""
 
+DELL_OPTIONS_READY_SCRIPT = r"""() => {
+  const selected = [...document.querySelectorAll('.option-grid-item')]
+    .filter(card => card.querySelector('.price.scoprice')?.textContent.trim() === 'Selected')
+    .map(card => card.querySelector('[data-test-id="option-title"]')?.textContent.trim() || '');
+  const has = pattern => selected.some(title => pattern.test(title));
+  return has(/Core\s*(?:Ultra|i[3579])|Ryzen/i) && has(/RTX\W*\d{4}|Radeon/i) &&
+    has(/\d+\s*GB.*\bDDR/i) && has(/\d+\s*(?:TB|GB).*(?:SSD|M\.2)/i);
+}"""
+
 DELL_CONFIG_READY_SCRIPT = r"""() => {
   const jquery = window.jQuery;
   const events = jquery?._data?.(document, 'events');
@@ -56,6 +65,31 @@ async def navigate_with_retry(page: Page, url: str) -> Response | None:
             raise
         await page.wait_for_timeout(500)
         return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+
+async def prepare_dell_configurator(page: Page) -> None:
+    try:
+        await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=5000)
+        return
+    except PlaywrightTimeoutError:
+        pass
+
+    try:
+        build_your_own = page.get_by_text("Build your own", exact=True)
+        entry_visible = await build_your_own.count() > 0
+        if entry_visible:
+            await build_your_own.last.scroll_into_view_if_needed()
+    except PlaywrightError as error:
+        raise AcquisitionError("戴尔自定义配置器入口无法激活") from error
+
+    try:
+        await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=15000)
+    except PlaywrightTimeoutError as error:
+        if entry_visible:
+            message = "戴尔“Build your own”区域已出现, 但自定义配置器未加载"
+        else:
+            message = "戴尔页面未找到可用的自定义配置器入口"
+        raise AcquisitionError(message) from error
 
 
 class BrowserFetcher:
@@ -96,11 +130,12 @@ class BrowserFetcher:
         url: URL,
         browser_factory: Callable[[], object] | None = None,
         dell_selection: dict[str, str] | None = None,
+        dell_catalog: bool = False,
     ) -> AcquiredPage:
         host = url.host
         if not host:
             raise AcquisitionError("Browser target has no hostname")
-        if dell_selection is not None and not (
+        if (dell_selection is not None or dell_catalog) and not (
             host in {"www.dell.com", "dell.com"} and url.path.startswith("/en-us/shop/")
         ):
             raise AcquisitionError("配置选择仅支持美国戴尔商品页")
@@ -184,10 +219,13 @@ class BrowserFetcher:
                         and url.path.startswith("/en-us/shop/")
                         and "/spd/alienware" in url.path
                     ):
-                        try:
-                            await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)
-                        except PlaywrightTimeoutError as error:
-                            raise AcquisitionError("戴尔商品配置或价格尚未完整加载") from error
+                        if dell_selection is not None or dell_catalog:
+                            await prepare_dell_configurator(page)
+                        else:
+                            try:
+                                await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)
+                            except PlaywrightTimeoutError as error:
+                                raise AcquisitionError("戴尔商品配置或价格尚未完整加载") from error
                     configured_offer = None
                     if dell_selection is not None:
                         try:
