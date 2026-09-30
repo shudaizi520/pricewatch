@@ -482,6 +482,39 @@ async def test_configured_dell_reveals_lazy_build_your_own_section(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_build_your_own_button_must_be_clicked_before_options_are_read():
+    class BuildButton:
+        @property
+        def last(self):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def scroll_into_view_if_needed(self):
+            page.scrolled = True
+
+        async def click(self):
+            page.opened = True
+
+    class FamilyPage:
+        scrolled = False
+        opened = False
+
+        async def wait_for_function(self, _script, **_kwargs):
+            if not self.opened:
+                raise PlaywrightTimeoutError("options require an explicit click")
+
+        def get_by_text(self, text, exact=False):
+            assert text == "Build your own" and exact
+            return BuildButton()
+
+    page = FamilyPage()
+    await prepare_dell_configurator(page)
+    assert page.opened
+
+
+@pytest.mark.anyio
 async def test_missing_dell_customizer_reports_the_failed_page_stage():
     class MissingEntry:
         async def count(self):
