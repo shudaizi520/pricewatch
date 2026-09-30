@@ -86,7 +86,7 @@ async def prepare_dell_configurator(page: Page) -> None:
         await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=15000)
     except PlaywrightTimeoutError as error:
         if entry_visible:
-            message = "戴尔“Build your own”区域已出现，但自定义配置器未加载"
+            message = "戴尔“Build your own”区域已出现, 但自定义配置器未加载"
         else:
             message = "戴尔页面未找到可用的自定义配置器入口"
         raise AcquisitionError(message) from error
