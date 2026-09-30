@@ -120,6 +120,22 @@ class DellUsAdapter:
             canonical = page.final_url
         sku = _text(structured.get("sku")) or urlparse(canonical).path.rstrip("/").split("/")[-1]
         sku = sku.lower()
+        sku_source = "jsonld.sku" if structured.get("sku") else "url"
+        if page.configured_offer is not None:
+            live_products = soup.select('#hero-section[data-product-id]')
+            final = urlparse(page.final_url)
+            if live_products:
+                if len(live_products) != 1:
+                    raise ExtractionError("Configured Dell product identity is not verifiable")
+                # Family JSON-LD can retain the default offer after the customizer opens.
+                sku = _text(live_products[0].get("data-product-id")).lower()
+                sku_source = "browser.configured_product_id"
+            if (
+                "/spd/" not in final.path
+                or final.path.rstrip("/").split("/")[-1].lower() != sku
+            ):
+                raise ExtractionError("Configured Dell product identity is not verifiable")
+            canonical = final._replace(fragment="").geturl()
         if not re.fullmatch(r"[a-z0-9_-]{3,160}", sku):
             raise ExtractionError("Dell product SKU is missing or invalid")
         description = _text(structured.get("description"))
@@ -185,6 +201,6 @@ class DellUsAdapter:
             discount_text=discount[:240] if discount else None,
             coupon_text=coupon[:500] if coupon else None,
             availability=availability,
-            evidence={"price": source, "sku": "jsonld.sku" if structured.get("sku") else "url"},
+            evidence={"price": source, "sku": sku_source},
             confidence=Decimal("0.95") if source != "visible.purchase_price" else Decimal("0.80"),
         )

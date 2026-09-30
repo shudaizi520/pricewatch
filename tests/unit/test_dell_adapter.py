@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -152,6 +153,51 @@ def test_conflicting_structured_current_prices_require_review():
     )
     with pytest.raises(AmbiguousExtraction):
         DellUsAdapter().extract(page(html))
+
+
+def configured_family_page(final_url=URL_STRING):
+    html = (FIXTURES / "options.html").read_text().replace(
+        '"sku":"aa18250_reg_01"', '"sku":"aa18250_so_4"'
+    ).replace(
+        "</body>",
+        '<div id="hero-section" data-product-id="aa18250_reg_01"></div>'
+        '<div data-testid="processor">Intel Core Ultra 9 290HX</div></body>',
+    )
+    return replace(
+        page(html, final_url=final_url),
+        configured_offer=ConfiguredOffer(
+            {
+                "Graphics Card": "NVIDIA® GeForce RTX™ 5070 8 GB GDDR7",
+                "Power Supply": "280W 7.4mm AC Adapter",
+            },
+            399999,
+        ),
+    )
+
+
+def test_configured_family_uses_live_product_identity_not_stale_base_offer_jsonld():
+    snapshot = DellUsAdapter().extract(configured_family_page())
+    assert snapshot.identity.sku == "aa18250_reg_01"
+    assert snapshot.canonical_url == URL_STRING
+    assert snapshot.evidence["sku"] == "browser.configured_product_id"
+
+
+def test_configured_family_rejects_product_identity_not_bound_to_current_url():
+    changed_url = URL_STRING.replace("aa18250_reg_01", "aa18250_so_4")
+    with pytest.raises(ExtractionError, match="identity"):
+        DellUsAdapter().extract(configured_family_page(changed_url))
+
+
+def test_configured_family_without_live_identity_rejects_stale_jsonld():
+    acquired = configured_family_page()
+    acquired = replace(
+        acquired,
+        body=acquired.body.replace(
+            b'<div id="hero-section" data-product-id="aa18250_reg_01"></div>', b""
+        ),
+    )
+    with pytest.raises(ExtractionError, match="identity"):
+        DellUsAdapter().extract(acquired)
 
 
 def test_supports_dell_us_product_not_other_regions():

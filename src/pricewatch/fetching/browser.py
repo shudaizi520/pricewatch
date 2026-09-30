@@ -79,6 +79,12 @@ async def prepare_dell_configurator(page: Page) -> None:
         entry_visible = await build_your_own.count() > 0
         if entry_visible:
             await build_your_own.last.scroll_into_view_if_needed()
+            try:
+                await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=1000)
+                return
+            except PlaywrightTimeoutError:
+                # New family pages require activating the public custom-order button.
+                await build_your_own.last.click()
     except PlaywrightError as error:
         raise AcquisitionError("戴尔自定义配置器入口无法激活") from error
 
