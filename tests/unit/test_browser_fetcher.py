@@ -7,7 +7,12 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from pricewatch.adapters.base import ExtractionError
-from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher, navigate_with_retry
+from pricewatch.fetching.browser import (
+    AcquisitionPipeline,
+    BrowserFetcher,
+    navigate_with_retry,
+    prepare_dell_configurator,
+)
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import AcquiredPage, ConfiguredOffer
 
@@ -343,6 +348,207 @@ async def test_dell_browser_waits_for_configuration_runtime_before_applying_reci
 
     assert len(page.waited_scripts) == 2
     assert result.configured_offer == ConfiguredOffer({"Graphics Card": "RTX 5090"}, 719999)
+
+
+class _FakeDellProxy:
+    port = 43123
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+async def _fetch_dell_scenario(monkeypatch, page, *, selection=None, catalog=False):
+    class FakeBrowser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return page
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        chromium = None
+
+        async def launch(self, **_kwargs):
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        async def __aenter__(self):
+            result = FakePlaywright()
+            result.chromium = result
+            return result
+
+        async def __aexit__(self, *_args):
+            return None
+
+    async def apply_saved_recipe(_page, recipe):
+        return ConfiguredOffer(recipe, 889299)
+
+    monkeypatch.setattr(
+        "pricewatch.fetching.browser.SafeSocksProxy", lambda *_a, **_k: _FakeDellProxy()
+    )
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FakePlaywrightContext)
+    monkeypatch.setattr("pricewatch.fetching.browser.apply_selection", apply_saved_recipe)
+    return await BrowserFetcher(resolver=lambda _: ["93.184.216.34"]).fetch(
+        URL(page.url), dell_selection=selection, dell_catalog=catalog
+    )
+
+
+@pytest.mark.anyio
+async def test_configured_dell_does_not_wait_for_one_pagewide_family_price(monkeypatch):
+    class FamilyPage:
+        url = "https://www.dell.com/en-us/shop/desktops/spd/alienwarearea51aat2265"
+
+        def __init__(self):
+            self.waited_scripts = []
+            self.listeners = {}
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, script, **_kwargs):
+            self.waited_scripts.append(script)
+            if "priceCurrency" in script:
+                raise PlaywrightTimeoutError("family page exposes several offer prices")
+
+        async def content(self):
+            return "<html><body>Dell Price $8,892.99</body></html>"
+
+    page = FamilyPage()
+    recipe = {"Graphics Card": "RTX 5090"}
+    result = await _fetch_dell_scenario(monkeypatch, page, selection=recipe)
+
+    assert result.configured_offer == ConfiguredOffer(recipe, 889299)
+    assert all("priceCurrency" not in script for script in page.waited_scripts)
+
+
+@pytest.mark.anyio
+async def test_configured_dell_reveals_lazy_build_your_own_section(monkeypatch):
+    url = "https://www.dell.com/en-us/shop/desktops/spd/alienwarearea51aat2265"
+
+    class BuildYourOwn:
+        def __init__(self, page):
+            self.page = page
+
+        @property
+        def last(self):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def scroll_into_view_if_needed(self):
+            self.page.revealed = True
+
+    class FakePage:
+        def __init__(self):
+            self.url = url
+            self.listeners = {}
+            self.revealed = False
+
+        def on(self, name, callback):
+            self.listeners[name] = callback
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, script, **_kwargs):
+            if "option-grid-item" in script and not self.revealed:
+                raise PlaywrightTimeoutError("customizer is still below the fold")
+
+        def get_by_text(self, text, exact=False):
+            assert text == "Build your own"
+            assert exact is True
+            return BuildYourOwn(self)
+
+        async def content(self):
+            return "<html><body>Dell Price $8,892.99</body></html>"
+
+    page = FakePage()
+    result = await _fetch_dell_scenario(
+        monkeypatch, page, selection={"Graphics Card": "RTX 5090"}
+    )
+
+    assert page.revealed is True
+    assert result.configured_offer.price_minor == 889299
+
+
+@pytest.mark.anyio
+async def test_missing_dell_customizer_reports_the_failed_page_stage():
+    class MissingEntry:
+        async def count(self):
+            return 0
+
+    class FamilyOnlyPage:
+        async def wait_for_function(self, _script, **_kwargs):
+            raise PlaywrightTimeoutError("customizer never loaded")
+
+        def get_by_text(self, text, exact=False):
+            assert text == "Build your own"
+            assert exact is True
+            return MissingEntry()
+
+    with pytest.raises(AcquisitionError, match="未找到可用的自定义配置器入口"):
+        await prepare_dell_configurator(FamilyOnlyPage())
+
+
+@pytest.mark.anyio
+async def test_unusable_dell_customizer_entry_reports_the_failed_page_stage():
+    class BrokenEntry:
+        @property
+        def last(self):
+            return self
+
+        async def count(self):
+            return 1
+
+        async def scroll_into_view_if_needed(self):
+            raise PlaywrightError("detached while Dell replaced the family cards")
+
+    class ReplacedFamilyPage:
+        async def wait_for_function(self, _script, **_kwargs):
+            raise PlaywrightTimeoutError("customizer never loaded")
+
+        def get_by_text(self, _text, exact=False):
+            assert exact is True
+            return BrokenEntry()
+
+    with pytest.raises(AcquisitionError, match="自定义配置器入口无法激活"):
+        await prepare_dell_configurator(ReplacedFamilyPage())
+
+
+@pytest.mark.anyio
+async def test_dell_catalog_fetch_uses_customizer_instead_of_family_price(monkeypatch):
+    class FakePage:
+        url = "https://www.dell.com/en-us/shop/desktops/spd/alienwarearea51aat2265"
+
+        def __init__(self):
+            self.waited_scripts = []
+
+        async def goto(self, *_args, **_kwargs):
+            return type("Response", (), {"status": 200})()
+
+        async def wait_for_function(self, script, **_kwargs):
+            self.waited_scripts.append(script)
+            if "priceCurrency" in script:
+                raise PlaywrightTimeoutError("family page exposes several offer prices")
+
+        async def content(self):
+            return "<html><body>Build your own</body></html>"
+
+    page = FakePage()
+    result = await _fetch_dell_scenario(monkeypatch, page, catalog=True)
+
+    assert result.status == 200
+    assert all("priceCurrency" not in script for script in page.waited_scripts)
 
 
 @pytest.mark.anyio
