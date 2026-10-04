@@ -16,7 +16,7 @@ COPY --from=wheels /wheels /wheels
 RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels pricewatch && \
     apt-get update && apt-get install -y --no-install-recommends \
       fonts-liberation fonts-noto-color-emoji libasound2t64 \
-      libssl3t64 openssl openssl-provider-legacy \
+      libssl3t64 openssl openssl-provider-legacy libpcre2-8-0 \
       libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
       libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 \
       libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 \
