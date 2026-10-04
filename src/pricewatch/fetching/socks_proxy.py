@@ -15,10 +15,22 @@ SOCKS_DENIED = b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00"
 SOCKS_UNREACHABLE = b"\x05\x04\x00\x01\x00\x00\x00\x00\x00\x00"
 
 
+def _write(writer: asyncio.StreamWriter, data: bytes) -> None:
+    if writer.is_closing():
+        raise ConnectionError("SOCKS destination is closed")
+    try:
+        writer.write(data)
+    except RuntimeError as error:
+        # uvloop raises RuntimeError rather than OSError for a closed TCP transport.
+        if not writer.is_closing():
+            raise
+        raise ConnectionError("SOCKS destination is closed") from error
+
+
 async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
         while chunk := await asyncio.wait_for(reader.read(65536), timeout=60):
-            writer.write(chunk)
+            _write(writer, chunk)
             await writer.drain()
     except (ConnectionError, OSError, TimeoutError):
         pass
@@ -26,6 +38,22 @@ async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> N
         if writer.can_write_eof():
             with suppress(ConnectionError, OSError, RuntimeError):
                 writer.write_eof()
+
+
+async def _wait_closed(writer: asyncio.StreamWriter) -> None:
+    closed = asyncio.create_task(writer.wait_closed())
+    try:
+        # Shield the protocol's shared close waiter from wait_for cancellation.
+        await asyncio.wait_for(asyncio.shield(closed), timeout=1)
+    except TimeoutError:
+        writer.transport.abort()
+        await closed
+    finally:
+        if not closed.done():
+            # Cancellation during cleanup must also discard stalled TCP buffers.
+            writer.transport.abort()
+            closed.cancel()
+            await asyncio.gather(closed, return_exceptions=True)
 
 
 class SafeSocksProxy:
@@ -39,14 +67,25 @@ class SafeSocksProxy:
         self.resolver = resolver
         self.upstream_socks = upstream_socks
         self.server: asyncio.Server | None = None
+        self._handlers: set[asyncio.Task[None]] = set()
+        self._closing = False
 
     async def __aenter__(self) -> Self:
+        self._closing = False
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
         return self
 
     async def __aexit__(self, *_args: object) -> None:
+        self._closing = True
         if self.server is not None:
             self.server.close()
+            # Let already-accepted clients enter _handle before draining their tasks.
+            await asyncio.sleep(0)
+            while self._handlers:
+                handlers = tuple(self._handlers)
+                for task in handlers:
+                    task.cancel()
+                await asyncio.gather(*handlers, return_exceptions=True)
             await self.server.wait_closed()
 
     @property
@@ -72,14 +111,14 @@ class SafeSocksProxy:
 
         reader, writer = await asyncio.open_connection(*self.upstream_socks)
         try:
-            writer.write(b"\x05\x01\x00")
+            _write(writer, b"\x05\x01\x00")
             await writer.drain()
             if await reader.readexactly(2) != b"\x05\x00":
                 raise OSError("Upstream SOCKS authentication unavailable")
 
             target = ipaddress.ip_address(address)
             kind = b"\x01" if target.version == 4 else b"\x04"
-            writer.write(b"\x05\x01\x00" + kind + target.packed + port.to_bytes(2, "big"))
+            _write(writer, b"\x05\x01\x00" + kind + target.packed + port.to_bytes(2, "big"))
             await writer.drain()
             version, status, _, address_type = await reader.readexactly(4)
             if version != 5 or status != 0:
@@ -99,13 +138,19 @@ class SafeSocksProxy:
             raise
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        handler = asyncio.current_task()
+        assert handler is not None
+        self._handlers.add(handler)
         upstream: asyncio.StreamWriter | None = None
+        tasks: tuple[asyncio.Task[None], ...] = ()
         try:
+            if self._closing:
+                return
             version, count = await reader.readexactly(2)
             methods = await reader.readexactly(count)
             if version != 5 or 0 not in methods:
                 return
-            writer.write(b"\x05\x00")
+            _write(writer, b"\x05\x00")
             await writer.drain()
 
             version, command, _, address_type = await reader.readexactly(4)
@@ -124,7 +169,7 @@ class SafeSocksProxy:
             try:
                 address = await asyncio.to_thread(self._public_address, host, port)
             except (UnsafeUrlError, ValueError, UnicodeError):
-                writer.write(SOCKS_DENIED)
+                _write(writer, SOCKS_DENIED)
                 await writer.drain()
                 return
             try:
@@ -132,11 +177,11 @@ class SafeSocksProxy:
                     self._open_target(address, port), timeout=10
                 )
             except (OSError, TimeoutError, asyncio.IncompleteReadError):
-                writer.write(SOCKS_UNREACHABLE)
+                _write(writer, SOCKS_UNREACHABLE)
                 await writer.drain()
                 return
             upstream = upstream_writer
-            writer.write(SOCKS_OK)
+            _write(writer, SOCKS_OK)
             await writer.drain()
             tasks = (
                 asyncio.create_task(_copy(reader, upstream_writer)),
@@ -146,6 +191,21 @@ class SafeSocksProxy:
         except (asyncio.IncompleteReadError, ConnectionError, OSError, UnicodeError):
             pass
         finally:
+            for task in tasks:
+                task.cancel()
             writer.close()
             if upstream is not None:
                 upstream.close()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for connection in (writer, upstream):
+                    if connection is not None:
+                        with suppress(ConnectionError, OSError):
+                            await _wait_closed(connection)
+            finally:
+                # A second cancellation can interrupt one writer's cleanup; do not
+                # leave the other transport flushing after the handler disappears.
+                writer.transport.abort()
+                if upstream is not None:
+                    upstream.transport.abort()
+                self._handlers.discard(handler)
