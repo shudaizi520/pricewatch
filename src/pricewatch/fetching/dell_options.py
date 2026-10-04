@@ -103,7 +103,9 @@ async def settled_offer(
         except ValueError:
             price = None
         if changed and not quote_confirmed and price == baseline_price and quote_responses:
-            await quote_responses[-1].finished()
+            # Reading the completed quote avoids Playwright finished()'s orphaned
+            # target-close watcher, while still rejecting incomplete/failed responses.
+            await quote_responses[-1].body()
             quote_confirmed = True
         # Dell can mark the new option selected before its asynchronous quote arrives.
         if changed and not quote_confirmed and price == baseline_price:

@@ -1,9 +1,15 @@
+import asyncio
+import base64
 import json
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from bs4 import BeautifulSoup
+from playwright._impl._network import Response as ImplResponse
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Response as BrowserResponse
 
 from pricewatch.fetching.dell_options import (
     active_price_minor,
@@ -16,6 +22,80 @@ from pricewatch.fetching.dell_options import (
 from pricewatch.fetching.types import ConfiguredOffer
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dell" / "options.html"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["complete", "close", "cancel", "body_failure"])
+async def test_same_price_quote_completion_does_not_leave_browser_close_task(outcome):
+    loop = asyncio.get_running_loop()
+    initial_tasks = asyncio.all_tasks()
+    target_closed = loop.create_future()
+    body_ready = asyncio.Event()
+
+    class Channel:
+        async def send(self, method, _timeout):
+            assert method == "body"
+            await body_ready.wait()
+            if target_closed.done():
+                raise PlaywrightError("Target closed")
+            if outcome == "body_failure":
+                raise PlaywrightError("Response aborted")
+            return base64.b64encode(b'{"price":3999.99}').decode()
+
+    # Exercise Playwright's real response lifecycle; only its browser IPC is replaced.
+    response = object.__new__(ImplResponse)
+    response._loop = loop
+    response._channel = Channel()
+    response._request = SimpleNamespace(_target_closed_future=lambda: target_closed)
+    response._finished_future = loop.create_future()
+    response._finished_future.set_result(None)
+
+    class Page:
+        async def content(self):
+            return FIXTURE.read_text()
+
+        async def evaluate(self, _script):
+            return "Dell Price $3,999.99"
+
+        async def wait_for_timeout(self, _milliseconds):
+            await asyncio.sleep(0)
+
+    quote_task = asyncio.create_task(
+        settled_offer(
+            Page(),
+            {"Graphics Card": "NVIDIA® GeForce RTX™ 5070 8 GB GDDR7"},
+            baseline_price=399999,
+            changed=True,
+            quote_responses=[BrowserResponse(response)],
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        if outcome == "close":
+            target_closed.set_result(None)
+        if outcome == "cancel":
+            quote_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await quote_task
+        elif outcome == "close":
+            body_ready.set()
+            with pytest.raises(PlaywrightError, match="Target closed"):
+                await quote_task
+        elif outcome == "body_failure":
+            body_ready.set()
+            with pytest.raises(PlaywrightError, match="Response aborted"):
+                await quote_task
+        else:
+            body_ready.set()
+            assert (await quote_task).price_minor == 399999
+        leftover = asyncio.all_tasks() - initial_tasks
+        assert not leftover, "Quote completion must not leave a task awaiting page shutdown"
+    finally:
+        quote_task.cancel()
+        await asyncio.gather(quote_task, return_exceptions=True)
+        for task in asyncio.all_tasks() - initial_tasks:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def test_catalog_uses_dell_group_and_option_titles_not_price_deltas():
@@ -186,8 +266,8 @@ async def test_same_price_switch_requires_its_own_dell_quote(
         def __init__(self, request):
             self.request = request
 
-        async def finished(self):
-            return None
+        async def body(self):
+            return b"{}"
 
     class Locator:
         def __init__(self, page):
@@ -675,8 +755,8 @@ async def test_option_click_retries_once_when_first_click_emits_no_request(monke
         def __init__(self, request):
             self.request = request
 
-        async def finished(self):
-            return None
+        async def body(self):
+            return b"{}"
 
     class HiddenModal:
         def filter(self, **_kwargs):
