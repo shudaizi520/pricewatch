@@ -6,7 +6,7 @@
 
 ## 从 GitHub 镜像空白安装
 
-`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.10`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
+`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.11`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
 
 1. 把 [compose.ghcr.yml](compose.ghcr.yml) 保存到一个新目录，在该目录运行 `docker compose -f compose.ghcr.yml pull`，再运行 `docker compose -f compose.ghcr.yml up -d`。
 2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；空白安装打开首页会自动进入创建管理员页面，首次填写账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
@@ -56,6 +56,7 @@
 ## 状态与排查
 
 - `docker compose ps` 和 `docker compose logs --tail=100 pricewatch` 可看容器状态，`curl -f http://127.0.0.1:8080/healthz` 可看健康检查。日志不要包含完整飞书 Webhook；分享日志前仍建议检查脱敏。
+- NAS 重启后会重新验证浏览器显示服务，不把遗留 socket 文件当成启动成功。显示服务运行中退出或无法响应时，应用会停止当前故障进程，由 `restart: unless-stopped` 自动重启容器；`/healthz` 同时检查显示服务与数据库。请保留该重启策略，手动停止应用则不会自行启动。若仍异常，可先重启 PriceWatch 应用（不必重启整台 NAS），再检查日志和一次真实商品刷新，不能只看网页能否打开。
 - 戴尔返回 403 或出现人机验证时，应用会尝试受限的有界面 Chromium；可为美国戴尔单独配置上述 SOCKS5 代理，但不会代替用户完成验证码。代理路径可用也不保证站点今后始终允许自动访问；检查失败不会覆盖上次可信价格。
 - 反代登录循环一般与 HTTPS/外部地址及 Cookie 有关，检查 `PRICEWATCH_EXTERNAL_URL` 和反代转发头。
 - 忘记密码时，先停止服务；把密码写入权限为 600 的数据集文件，再运行 `docker compose run --rm --no-deps --entrypoint pricewatch pricewatch admin reset-password --username 用户名 --password-file /data/密码文件名`。重置后删除此明文文件，不要把密码写进命令历史。
@@ -63,7 +64,7 @@
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.10`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.11`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
 
 CI 会完整报告镜像的高危/严重漏洞，并阻止任何已有修复版本却尚未升级的漏洞。2026-09-21 的试构建仍有 56 项 Debian 系统包告警（其中 1 项严重），扫描器尚未列出修复版本。这不是“零漏洞”；待上游发布修复后应及时重建和升级镜像。实机验收期间只应经受信任的局域网或反代访问，不应直接把 8080 暴露到公网。
 

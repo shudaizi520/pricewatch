@@ -32,7 +32,7 @@ jobs:
       - run: docker build -t pricewatch:ci .
       - name: Smoke test container health and bundled Chromium
         run: |
-          docker run -d --name pricewatch-ci --tmpfs /data:rw,uid=10001,gid=10001 -e PRICEWATCH_APP_SECRET_KEY=ci-only-long-random-placeholder-secret-000001 -p 127.0.0.1:18080:8080 pricewatch:ci
+          docker run -d --restart unless-stopped --name pricewatch-ci --tmpfs /data:rw,uid=10001,gid=10001 -e PRICEWATCH_APP_SECRET_KEY=ci-only-long-random-placeholder-secret-000001 -p 127.0.0.1:18080:8080 pricewatch:ci
           for attempt in {1..30}; do
             if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
             sleep 2
@@ -61,6 +61,43 @@ jobs:
                   page.get_by_role("button", name="深色").click()
               page.reload(wait_until="domcontentloaded")
               assert page.locator("html").get_attribute("data-theme") == "dark"
+              browser.close()
+          PY
+      - name: Verify real display failure recovery and cold restart
+        run: |
+          docker exec -i pricewatch-ci python - <<'PY'
+          import os, signal
+          from pathlib import Path
+          pids = [int(p.parent.name) for p in Path('/proc').glob('[0-9]*/comm')
+                  if p.read_text().strip() == 'Xvfb']
+          assert len(pids) == 1
+          os.kill(pids[0], signal.SIGTERM)
+          PY
+          for attempt in {1..30}; do
+            if test "$(docker inspect --format '{{.RestartCount}}' pricewatch-ci)" -gt 0 && curl -fsS http://127.0.0.1:18080/healthz; then break; fi
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.RestartCount}}' pricewatch-ci)" -gt 0
+          curl -fsS http://127.0.0.1:18080/healthz
+          docker restart pricewatch-ci
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          docker exec -i pricewatch-ci python - <<'PY'
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          from pricewatch.runtime import display_available
+          displays = [':' + p.name[1:] for p in Path('/tmp/.X11-unix').glob('X*')
+                      if display_available(':' + p.name[1:])]
+          assert len(displays) == 1
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=False, env={**os.environ, 'DISPLAY': displays[0]})
+              page = browser.new_page()
+              response = page.goto('http://127.0.0.1:8080/healthz')
+              assert response.status == 200
               browser.close()
           PY
       - name: Smoke test fresh install without supplied application secret

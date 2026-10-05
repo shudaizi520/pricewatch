@@ -14,6 +14,14 @@ async def test_health_endpoint(client):
     assert isinstance(response.json()["version"], str)
 
 
+@pytest.mark.anyio
+async def test_health_rejects_an_unreachable_browser_display(client, monkeypatch):
+    monkeypatch.setenv("DISPLAY", ":987654")
+    response = await client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "browser display unavailable"
+
+
 def test_secret_rejects_short_value(tmp_path):
     with pytest.raises(ValidationError):
         Settings(data_dir=tmp_path, app_secret_key="short")
