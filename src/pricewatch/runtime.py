@@ -9,9 +9,9 @@ import struct
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from threading import Event
 from types import FrameType
 
 X11_DIR = Path("/tmp/.X11-unix")
@@ -55,10 +55,10 @@ def _stop(process: subprocess.Popen[bytes] | None) -> None:
         process.wait()
 
 
-def _wait_display(process: subprocess.Popen[bytes], fd: int, stopping: Event) -> str:
+def _wait_display(process: subprocess.Popen[bytes], fd: int, stopping: Callable[[], bool]) -> str:
     deadline = time.monotonic() + STARTUP_TIMEOUT
     number = b""
-    while not stopping.is_set() and time.monotonic() < deadline:
+    while not stopping() and time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError("Browser display exited during startup")
         if select.select([fd], [], [], 0.1)[0]:
@@ -70,22 +70,24 @@ def _wait_display(process: subprocess.Popen[bytes], fd: int, stopping: Event) ->
                 if re.fullmatch(rb"[0-9]{1,5}\n", number) is None:
                     raise RuntimeError("Browser display returned an invalid display number")
                 display = ":" + number[:-1].decode("ascii")
-                while not stopping.is_set() and time.monotonic() < deadline:
+                while not stopping() and time.monotonic() < deadline:
                     if process.poll() is not None:
                         raise RuntimeError("Browser display exited during startup")
                     if display_available(display):
                         return display
-                    stopping.wait(0.1)
+                    time.sleep(0.1)
                 break
     raise RuntimeError("Browser display did not become ready")
 
 
 def main() -> int:
     """Exit on display failure so the existing Docker restart policy can recover."""
-    stopping = Event()
+    stopping = False
 
     def stop_requested(_signum: int, _frame: FrameType | None) -> None:
-        stopping.set()
+        # Signal handlers must not acquire locks held by an interrupted wait.
+        nonlocal stopping
+        stopping = True
 
     previous = {
         signum: signal.signal(signum, stop_requested) for signum in (signal.SIGTERM, signal.SIGINT)
@@ -113,12 +115,12 @@ def main() -> int:
             )
             os.close(write_fd)
             write_fd = -1
-            display = _wait_display(display_process, read_fd, stopping)
+            display = _wait_display(display_process, read_fd, lambda: stopping)
         finally:
             os.close(read_fd)
             if write_fd >= 0:
                 os.close(write_fd)
-        if stopping.is_set():
+        if stopping:
             return 0
         environment = {**os.environ, "DISPLAY": display}
         web_process = subprocess.Popen(
@@ -141,7 +143,10 @@ def main() -> int:
             env=environment,
             start_new_session=True,
         )
-        while not stopping.wait(MONITOR_INTERVAL):
+        while not stopping:
+            time.sleep(MONITOR_INTERVAL)
+            if stopping:
+                break
             if display_process.poll() is not None or not display_available(display):
                 print("Browser display unavailable; restarting the container", file=sys.stderr)
                 return 1
@@ -150,7 +155,7 @@ def main() -> int:
                 return status if status >= 0 else 128 - status
         return 0
     except (OSError, RuntimeError):
-        if stopping.is_set():
+        if stopping:
             return 0
         print(
             "Container runtime could not start; retrying via Docker restart policy", file=sys.stderr

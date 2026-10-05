@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -89,9 +90,20 @@ def launch_runtime(tmp_path):
         env = {**os.environ, "PW_RUNTIME_TEST": str(tmp_path), **extra}
         env["PATH"] = f"{tmp_path}:{env['PATH']}"
         code = (
-            "import sys; from pathlib import Path; from pricewatch import runtime; "
-            "runtime.X11_DIR=Path(sys.argv[1]); runtime.STARTUP_TIMEOUT=0.6; "
-            "runtime.MONITOR_INTERVAL=0.05; runtime.STOP_TIMEOUT=0.3; "
+            "import os,sys,signal,threading,time\n"
+            "from pathlib import Path\nfrom pricewatch import runtime\n"
+            "runtime.X11_DIR=Path(sys.argv[1]); runtime.STARTUP_TIMEOUT=0.6\n"
+            "runtime.MONITOR_INTERVAL=0.05; runtime.STOP_TIMEOUT=0.3\n"
+            "if os.environ.get('PW_SIGNAL_BOUNDARY'):\n"
+            "    def interrupt(frame,event,arg):\n"
+            "        condition = (event=='call' and frame.f_code.co_name=='wait' "
+            "and isinstance(frame.f_locals.get('self'),threading.Condition))\n"
+            "        sleep = (event=='c_call' and arg is time.sleep "
+            "and frame.f_globals.get('__name__')=='pricewatch.runtime')\n"
+            "        if condition or sleep:\n"
+            "            sys.setprofile(None)\n"
+            "            os.kill(os.getpid(),signal.SIGTERM)\n"
+            "    sys.setprofile(interrupt)\n"
             "sys.exit(runtime.main())"
         )
         process = subprocess.Popen(
@@ -108,7 +120,16 @@ def launch_runtime(tmp_path):
     for process in processes:
         if process.poll() is None:
             process.terminate()
-            process.wait(timeout=5)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+                # The interrupted supervisor may never reach its cleanup.
+                for item in events(tmp_path):
+                    if item["event"] in ("web_started", "display_started"):
+                        with suppress(ProcessLookupError):
+                            os.kill(item["pid"], signal.SIGTERM)
 
 
 def assert_children_reaped(root: Path) -> None:
@@ -185,3 +206,9 @@ def test_local_display_probe_rejects_stale_and_remote_displays(tmp_path, monkeyp
     assert not runtime.display_available(":99")
     assert not runtime.display_available("192.168.50.99:0")
     assert not runtime.display_available(":../../data")
+
+
+def test_signal_at_wait_boundary_does_not_deadlock(tmp_path, launch_runtime):
+    process = launch_runtime(PW_SIGNAL_BOUNDARY="1")
+    assert process.wait(timeout=2) == 0
+    assert_children_reaped(tmp_path)
