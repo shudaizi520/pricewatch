@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from pricewatch.db.models import Setting
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.fetching.browser import AcquisitionPipeline, BrowserFetcher
 from pricewatch.fetching.http import HttpFetcher
+from pricewatch.runtime import display_available
 from pricewatch.services.backups import BackupService
 from pricewatch.services.checks import CheckService
 from pricewatch.services.crypto import SecretBox
@@ -120,6 +122,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:
+        display = os.environ.get("DISPLAY")
+        if display and not display_available(display):
+            raise HTTPException(503, "browser display unavailable")
         try:
             with session_factory() as session:
                 session.execute(text("SELECT 1"))
