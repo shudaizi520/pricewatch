@@ -212,7 +212,11 @@ class CheckService:
                                     "stock_changed",
                                     now,
                                     {"availability": previous.availability},
-                                    {"availability": snapshot.availability},
+                                    {
+                                        "availability": snapshot.availability,
+                                        "price_minor": snapshot.price.minor,
+                                        "currency": snapshot.price.currency,
+                                    },
                                 )
                             )
                         if (
@@ -233,6 +237,8 @@ class CheckService:
                                     {
                                         "coupon": snapshot.coupon_text,
                                         "discount": snapshot.discount_text,
+                                        "price_minor": snapshot.price.minor,
+                                        "currency": snapshot.price.currency,
                                     },
                                 )
                             )
@@ -258,7 +264,18 @@ class CheckService:
                             )
                         )
                     if product.failure_reported:
-                        events.append(DomainEvent(product_id, "check_recovered", now, {}, {}))
+                        events.append(
+                            DomainEvent(
+                                product_id,
+                                "check_recovered",
+                                now,
+                                {},
+                                {
+                                    "price_minor": snapshot.price.minor,
+                                    "currency": snapshot.price.currency,
+                                },
+                            )
+                        )
                     product.failure_reported = False
                     product.consecutive_failures = 0
                     product.canonical_url = snapshot.canonical_url

@@ -141,6 +141,11 @@ def _message_configuration(record: dict[str, object] | None) -> list[str]:
 
 def format_message(event: DomainEvent, product: Product) -> str:
     name = product.name or "监控商品"
+    if event.kind == "check_failed":
+        category = event.new.get("category") or "未知错误"
+        detail = event.new.get("detail")
+        reason = f"{category}" + (f" · {detail}" if detail else "")
+        return f"{name} · 检查重试失败\n失败原因: {reason}"
     config = _message_configuration(product.configuration)
     time = event.observed_at.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
     labels = {
@@ -149,7 +154,6 @@ def format_message(event: DomainEvent, product: Product) -> str:
         "offer_changed": "优惠变化",
         "stock_changed": "库存变化",
         "configuration_changed": "配置变化 请确认",
-        "check_failed": "检查重试失败",
         "check_recovered": "检查已恢复",
     }
     lines = [f"{name} · {labels.get(event.kind, event.kind)}", "", *config, ""]
@@ -168,7 +172,8 @@ def format_message(event: DomainEvent, product: Product) -> str:
         else:
             lines.append(f"价格: {price}")
         if (
-            product.notify_mode == "target_or_change"
+            event.kind in ("initial_observation", "price_changed")
+            and product.notify_mode == "target_or_change"
             and product.target_price_minor is not None
             and current <= product.target_price_minor
             and (not isinstance(previous, int) or previous > product.target_price_minor)
@@ -189,10 +194,6 @@ def format_message(event: DomainEvent, product: Product) -> str:
         if old_description or new_description:
             lines.append(f"原配置: {old_description or '未知'}")
             lines.append(f"新配置: {new_description or '未知'}")
-    if event.kind == "check_failed":
-        category = event.new.get("category") or "未知错误"
-        detail = event.new.get("detail")
-        lines.append(f"失败原因: {category}" + (f" · {detail}" if detail else ""))
     lines.extend(
         [f"北京时间: {time}", f"商品链接: {product.canonical_url or product.requested_url}"]
     )

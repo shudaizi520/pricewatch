@@ -1,5 +1,6 @@
 import gc
 import weakref
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -137,6 +138,77 @@ def test_price_and_stock_changes_emit_distinct_events(check_service):
     )
     assert [event.kind for event in first.events] == ["initial_observation"]
     assert {event.kind for event in changed.events} == {"price_changed", "stock_changed"}
+
+
+@pytest.mark.parametrize("kind", ["stock_changed", "offer_changed", "check_recovered"])
+@pytest.mark.parametrize(
+    "currency,price_line", [("USD", "价格: $2,799.99"), ("EUR", "价格: EUR 2,799.99")]
+)
+def test_success_notifications_include_the_current_snapshot_price(
+    check_service, kind, currency, price_line
+):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, replace(snapshot(), price=Money(currency, 299999)))
+    current = replace(snapshot(), price=Money(currency, 279999))
+    if kind == "stock_changed":
+        current = replace(current, availability="out_of_stock")
+    elif kind == "offer_changed":
+        current = replace(current, coupon_text="SAVE10")
+    else:
+        service.record_failure(product_id, "blocked")
+        service.record_failure(product_id, "blocked")
+
+    outcome = service.accept_snapshot(product_id, current)
+    assert outcome.status == "ok"
+    with factory() as session:
+        message = session.scalar(
+            select(NotificationDelivery).where(NotificationDelivery.event_type == kind)
+        )
+        assert message is not None
+        assert price_line in message.message_text.splitlines()
+        assert "2,999.99" not in message.message_text
+
+
+def test_failure_notification_only_identifies_product_and_failure_reason(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, snapshot())
+    service.record_failure(product_id, "blocked", error_message="页面访问超时")
+    service.record_failure(product_id, "blocked", error_message="页面访问超时")
+
+    with factory() as session:
+        message = session.scalar(
+            select(NotificationDelivery).where(NotificationDelivery.event_type == "check_failed")
+        )
+        lines = [line for line in message.message_text.splitlines() if line]
+        assert "Alienware · 检查重试失败" in lines
+        assert "失败原因: blocked · 页面访问超时" in lines
+        assert len(lines) == 2
+
+
+@pytest.mark.parametrize("kind", ["stock_changed", "offer_changed", "check_recovered"])
+def test_adding_current_price_does_not_reannounce_an_already_reached_target(check_service, kind):
+    service, factory, product_id = check_service
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.notify_mode = "target_or_change"
+        product.target_price_minor = 300000
+    current = snapshot()
+    service.accept_snapshot(product_id, current)
+    if kind == "stock_changed":
+        current = replace(current, availability="out_of_stock")
+    elif kind == "offer_changed":
+        current = replace(current, coupon_text="SAVE10")
+    else:
+        service.record_failure(product_id, "blocked")
+        service.record_failure(product_id, "blocked")
+
+    service.accept_snapshot(product_id, current)
+    with factory() as session:
+        message = session.scalar(
+            select(NotificationDelivery).where(NotificationDelivery.event_type == kind)
+        )
+        assert "价格: $2,999.99" in message.message_text.splitlines()
+        assert "目标价已达到" not in message.message_text
 
 
 def test_redirect_updates_canonical_url_only_when_identity_matches(check_service):
