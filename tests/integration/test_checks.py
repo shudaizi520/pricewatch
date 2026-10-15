@@ -8,9 +8,10 @@ from freezegun import freeze_time
 from sqlalchemy import func, select
 
 from pricewatch.db.base import Base
-from pricewatch.db.models import NotificationDelivery, Observation, Product
+from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
+from pricewatch.fetching.http import AcquisitionError
 from pricewatch.services.checks import CheckService
 
 
@@ -353,6 +354,155 @@ def test_initial_event_is_durable_even_before_webhook_configured(check_service):
         assert len(deliveries) == 1
         assert deliveries[0].status == "pending"
         assert "$2,999.99" in deliveries[0].message_text
+
+
+@pytest.fixture
+def dell_entry_check(check_service):
+    service, factory, product_id = check_service
+    canonical = "https://www.dell.com/en-us/shop/spd/alienware/sku_01"
+    original = "https://www.dell.com/en-us/shop/spd/alienware"
+    trusted = replace(
+        snapshot(url=canonical),
+        configuration=ProductConfiguration(gpu="RTX 5090", extras={"Graphics Card": "RTX 5090"}),
+    )
+    service.accept_snapshot(product_id, trusted)
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.requested_url = original
+        product.dell_selection = {"Graphics Card": "RTX 5090"}
+    return service, factory, product_id, canonical, original, trusted
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [403, 404, 410])
+@pytest.mark.parametrize("recovering", [False, True])
+async def test_blocked_dell_canonical_retries_original_entry_with_same_selection(
+    dell_entry_check, status, recovering,
+):
+    service, factory, product_id, canonical, original, trusted = dell_entry_check
+    calls = []
+    if recovering:
+        with factory.begin() as session:
+            product = session.get(Product, product_id)
+            product.consecutive_failures = 2
+            product.failure_reported = True
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            if str(url) == canonical:
+                raise AcquisitionError("Unavailable canonical", status_code=status)
+            assert str(url) == original
+            return None, replace(trusted, price=Money("USD", 279999))
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "ok"
+    assert calls == [canonical, original]
+    assert [e.kind for e in outcome.events] == ["price_changed"] + (
+        ["check_recovered"] if recovering else []
+    )
+    with factory() as session:
+        assert session.get(Product, product_id).consecutive_failures == 0
+        assert session.scalars(select(Observation.price_minor).where(
+            Observation.trusted.is_(True)
+        ).order_by(Observation.id)).all() == [299999, 279999]
+        if recovering:
+            alert = session.scalar(select(NotificationDelivery).where(
+                NotificationDelivery.event_type == "check_recovered"
+            ))
+            assert "价格: $2,799.99" in alert.message_text.splitlines()
+            assert "$2,999.99" not in alert.message_text
+
+
+@pytest.mark.anyio
+async def test_failed_original_entry_counts_as_one_failed_check(dell_entry_check):
+    service, factory, product_id, canonical, original, _ = dell_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "failed"
+    assert calls == [canonical, original]
+    assert outcome.events == []
+    with factory() as session:
+        assert session.get(Product, product_id).consecutive_failures == 1
+        assert session.scalar(select(func.count(CheckRun.id)).where(
+            CheckRun.trigger == "scheduled"
+        )) == 1
+        assert session.scalar(select(func.count(Observation.id))) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mutation", ["sku", "gpu", "currency", "selection"])
+async def test_original_entry_cannot_replace_monitored_identity(dell_entry_check, mutation):
+    service, factory, product_id, canonical, original, trusted = dell_entry_check
+    current = replace(trusted, price=Money("USD", 279999))
+    if mutation == "sku":
+        current = replace(current, identity=ProductIdentity("dell-us", "other_sku"))
+    elif mutation == "currency":
+        current = replace(current, price=Money("EUR", 279999))
+    else:
+        current = replace(current, configuration=ProductConfiguration(
+            gpu="RTX 5080", extras={"Graphics Card": "RTX 5080" if mutation == "selection"
+                                  else "RTX 5090"},
+        ))
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            if str(url) == canonical:
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == original
+            return None, current
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == ("failed" if mutation == "selection" else "needs_attention")
+    with factory() as session:
+        trusted_rows = session.scalars(
+            select(Observation).where(Observation.trusted.is_(True))
+        ).all()
+        assert [(row.currency, row.price_minor) for row in trusted_rows] == [("USD", 299999)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("original,status", [
+    ("https://www.dell.com/en-us/shop/spd/alienware", None),
+    ("https://www.dell.com/en-us/shop/spd/alienware", 429),
+    ("https://www.dell.com/en-us/shop/spd/alienware", 500),
+    ("https://www.dell.com/en-us/shop/spd/alienware/sku_01", 403),
+    ("https://other.example/en-us/shop/spd/alienware", 403),
+    ("https://www.dell.com/en-uk/shop/spd/alienware", 403),
+    ("http://www.dell.com/en-us/shop/spd/alienware", 403),
+    ("https://www.dell.com:8443/en-us/shop/spd/alienware", 403),
+    ("https://user:password@www.dell.com/en-us/shop/spd/alienware", 403),
+])
+async def test_original_entry_retry_is_bounded_to_safe_distinct_us_dell_url(
+    dell_entry_check, original, status,
+):
+    service, factory, product_id, canonical, _, _ = dell_entry_check
+    with factory.begin() as session:
+        session.get(Product, product_id).requested_url = original
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            raise AcquisitionError("Unavailable canonical", status_code=status)
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == "failed"
+    assert calls == [canonical]
 
 
 @pytest.mark.anyio

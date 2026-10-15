@@ -764,6 +764,7 @@ async def test_same_url_can_create_distinct_selected_configurations(admin_client
         lambda address: validate_public_url(address, lambda host: ["8.8.8.8"]),
     )
     address = "https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250"
+    canonical = address + "/aa18250_reg_01"
 
     class FakeBrowser:
         async def fetch(self, _url, dell_catalog=False):
@@ -784,13 +785,16 @@ async def test_same_url_can_create_distinct_selected_configurations(admin_client
         browser = FakeBrowser()
 
         async def acquire(self, url, _adapter, dell_selection=None):
+            if str(url) == canonical:
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == address
             gpu = (dell_selection or {}).get("Graphics Card", "RTX 5070")
             price = 509999 if "5090" in gpu else 399999
             return None, ProductSnapshot(
                 ProductIdentity("dell-us", "aa18250_reg_01"),
-                str(url),
+                canonical,
                 "Alienware 18 Area-51",
-                ProductConfiguration(cpu="Core Ultra 9", gpu=gpu),
+                ProductConfiguration(cpu="Core Ultra 9", gpu=gpu, extras={"Graphics Card": gpu}),
                 Money("USD", price),
             )
 
@@ -828,6 +832,16 @@ async def test_same_url_can_create_distinct_selected_configurations(admin_client
         assert len(cards) == 2
         assert "5070" in cards[0].dell_selection["Graphics Card"]
         assert "5090" in cards[1].dell_selection["Graphics Card"]
+        assert all(card.requested_url == address for card in cards)
+        assert all(card.canonical_url == canonical for card in cards)
+    rechecked = await app.state.check_service.check_product(cards[1].id, "manual")
+    assert rechecked.status == "ok"
+    assert rechecked.events == []
+    with app.state.session_factory() as session:
+        rows = session.scalars(select(Observation).where(
+            Observation.product_id == cards[1].id, Observation.trusted.is_(True)
+        )).all()
+        assert [row.price_minor for row in rows] == [509999]
 
 
 @pytest.mark.anyio

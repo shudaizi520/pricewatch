@@ -359,6 +359,7 @@ async def product_preview(
         snapshot,
         datetime.now(UTC) + timedelta(minutes=15),
         recipe,
+        str(target),
     )
     return templates.TemplateResponse(
         request=request,
@@ -389,6 +390,7 @@ async def product_confirm(
         raise HTTPException(400, "预览已过期 请重新获取")
     snapshot: ProductSnapshot = entry[1]
     recipe: dict[str, str] | None = entry[3] if len(entry) > 3 else None
+    original_url: str = entry[4] if len(entry) > 4 else snapshot.canonical_url
     with request.app.state.session_factory.begin() as session:
         candidates = session.scalars(
             select(Product).where(
@@ -400,7 +402,7 @@ async def product_confirm(
                 return RedirectResponse(f"/products/{existing.id}", status_code=303)
         product = Product(
             source_site=snapshot.identity.site,
-            requested_url=snapshot.canonical_url,
+            requested_url=original_url,
             canonical_url=snapshot.canonical_url,
             name=snapshot.name,
             sku=snapshot.identity.sku,
