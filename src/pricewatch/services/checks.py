@@ -386,15 +386,38 @@ class CheckService:
             if product is None:
                 raise LookupError("Product not found")
             url = URL(product.canonical_url or product.requested_url)
+            original_url = URL(product.requested_url)
             sku = product.sku
             site = product.source_site
             dell_selection = product.dell_selection
         try:
             adapter = self.registry.for_url(url)
             if dell_selection:
-                _, snapshot = await self.pipeline.acquire(
-                    url, adapter, dell_selection=dell_selection
-                )
+                try:
+                    _, snapshot = await self.pipeline.acquire(
+                        url, adapter, dell_selection=dell_selection
+                    )
+                except AcquisitionError as error:
+                    if not (
+                        site == "dell-us"
+                        and sku
+                        and error.status_code in {403, 404, 410}
+                        and original_url != url
+                        and original_url.scheme == url.scheme == "https"
+                        and original_url.host == url.host
+                        and url.host in {"www.dell.com", "dell.com"}
+                        and original_url.port == url.port
+                        and not original_url.userinfo
+                        and original_url.path.startswith("/en-us/shop/")
+                        and url.path.startswith("/en-us/shop/")
+                    ):
+                        raise
+                    # A saved direct link can be rejected while the original family
+                    # entry still works. Retry once with the identical configuration;
+                    # all SKU, hardware and price guards below remain mandatory.
+                    _, snapshot = await self.pipeline.acquire(
+                        original_url, adapter, dell_selection=dell_selection
+                    )
                 if any(
                     snapshot.configuration.extras.get(group) != label
                     for group, label in dell_selection.items()
