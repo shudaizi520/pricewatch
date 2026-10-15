@@ -17,6 +17,7 @@ from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductConfiguration, ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline
 from pricewatch.fetching.http import AcquisitionError
+from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
@@ -390,33 +391,38 @@ class CheckService:
             sku = product.sku
             site = product.source_site
             dell_selection = product.dell_selection
+        first_entry_failure = None
         try:
             adapter = self.registry.for_url(url)
             if dell_selection:
+                prefer_original = (
+                    site == "dell-us"
+                    and bool(sku)
+                    and original_url != url
+                    and original_url.scheme == url.scheme == "https"
+                    and original_url.host == url.host
+                    and url.host in {"www.dell.com", "dell.com"}
+                    and original_url.port == url.port
+                    and not original_url.userinfo
+                    and not url.userinfo
+                    and original_url.path.startswith("/en-us/shop/")
+                    and url.path.startswith("/en-us/shop/")
+                )
                 try:
                     _, snapshot = await self.pipeline.acquire(
-                        url, adapter, dell_selection=dell_selection
+                        original_url if prefer_original else url,
+                        adapter,
+                        dell_selection=dell_selection,
                     )
                 except AcquisitionError as error:
-                    if not (
-                        site == "dell-us"
-                        and sku
-                        and error.status_code in {403, 404, 410}
-                        and original_url != url
-                        and original_url.scheme == url.scheme == "https"
-                        and original_url.host == url.host
-                        and url.host in {"www.dell.com", "dell.com"}
-                        and original_url.port == url.port
-                        and not original_url.userinfo
-                        and original_url.path.startswith("/en-us/shop/")
-                        and url.path.startswith("/en-us/shop/")
-                    ):
+                    if not prefer_original or error.status_code not in {403, 404, 410}:
                         raise
-                    # A saved direct link can be rejected while the original family
-                    # entry still works. Retry once with the identical configuration;
-                    # all SKU, hardware and price guards below remain mandatory.
+                    # SKU-specific entry pages are intermittently rejected while the
+                    # original family entry works. Prefer the latter, keeping one
+                    # bounded direct-link fallback and every quote/identity guard.
+                    first_entry_failure = f"原始入口 HTTP {error.status_code}"
                     _, snapshot = await self.pipeline.acquire(
-                        original_url, adapter, dell_selection=dell_selection
+                        url, adapter, dell_selection=dell_selection
                     )
                 if any(
                     snapshot.configuration.extras.get(group) != label
@@ -436,8 +442,12 @@ class CheckService:
                         if item is not None:
                             item.status = "needs_attention"
             detail = (
-                str(error)[:240] if isinstance(error, (AcquisitionError, ExtractionError)) else None
+                str(error)[:240]
+                if isinstance(error, (AcquisitionError, ExtractionError, UnsafeUrlError))
+                else None
             )
+            if first_entry_failure:
+                detail = f"{first_entry_failure}; 直达入口: {detail or type(error).__name__}"[:240]
             return self.record_failure(product_id, type(error).__name__, trigger, detail)
         else:
             return self.accept_snapshot(product_id, snapshot, trigger=trigger)
