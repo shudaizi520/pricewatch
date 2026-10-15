@@ -67,6 +67,36 @@ async def navigate_with_retry(page: Page, url: str) -> Response | None:
         return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
 
+async def navigate_product_page(page: Page, url: str) -> Response | None:
+    response = await navigate_with_retry(page, url)
+    target = URL(url)
+    if not (
+        response is not None
+        and response.status == 403
+        and target.scheme == "https"
+        and target.host == "www.dell.com"
+        and target.port in (None, 443)
+        and not target.userinfo
+        and target.path.startswith("/en-us/shop/")
+    ):
+        return response
+
+    # Keep server-issued cookies in this short-lived context. A normal US
+    # homepage visit can initialize a session when a cold product entry fails.
+    # Never parse that homepage as an offer or attempt an interactive challenge.
+    home_url = "https://www.dell.com/en-us"
+    try:
+        home = await page.goto(home_url, wait_until="domcontentloaded", timeout=10000)
+        if home is None or home.status != 200:
+            return response
+        await page.wait_for_load_state("load", timeout=5000)
+        if URL(home.url) != URL(home_url) or URL(page.url) != URL(home_url):
+            return response
+    except PlaywrightError:
+        return response
+    return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+
 async def prepare_dell_configurator(page: Page) -> None:
     try:
         await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=5000)
@@ -203,7 +233,7 @@ class BrowserFetcher:
                         page.on("requestfailed", record_configure_failure)
                     if host not in {"www.dell.com", "dell.com"}:
                         await page.route("**/*", lambda route: self.handle_route(route, host))
-                    response = await navigate_with_retry(page, str(url))
+                    response = await navigate_product_page(page, str(url))
                     if response is None:
                         raise AcquisitionError("浏览器未收到商品页面响应")
                     if response.status >= 400:

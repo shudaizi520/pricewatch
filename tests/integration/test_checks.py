@@ -12,6 +12,7 @@ from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Pr
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
 from pricewatch.fetching.http import AcquisitionError
+from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.checks import CheckService
 
 
@@ -177,6 +178,62 @@ def test_missing_packaging_does_not_hide_real_gpu_change(check_service):
         assert session.scalar(
             select(func.count(Observation.id)).where(Observation.trusted.is_(True))
         ) == 1
+
+
+@pytest.mark.parametrize("amount,expected_events", [(299999, []), (279999, ["price_changed"])])
+def test_known_bundled_software_description_change_does_not_pause_hardware(
+    check_service, amount, expected_events,
+):
+    service, factory, product_id = check_service
+    previous = replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090",
+        extras={"Systems Management": "Additional Software and Sanbao warranty card"},
+    ))
+    service.accept_snapshot(product_id, previous)
+    current = replace(previous, configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    ), price=Money("USD", amount))
+
+    outcome = service.accept_snapshot(product_id, current)
+
+    assert outcome.status == "ok"
+    assert outcome.product.status == "active"
+    assert [event.kind for event in outcome.events] == expected_events
+    with factory() as session:
+        assert session.scalar(select(func.count(Observation.id)).where(
+            Observation.trusted.is_(False)
+        )) == 0
+
+
+def test_other_management_software_choice_still_requires_confirmation(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    )))
+    changed = replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Paid Fleet Management Bundle"},
+    ))
+
+    outcome = service.accept_snapshot(product_id, changed)
+
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+    with factory() as session:
+        assert session.scalar(
+            select(func.count(Observation.id)).where(Observation.trusted.is_(True))
+        ) == 1
+
+
+def test_missing_management_software_group_still_requires_confirmation(check_service):
+    service, _, product_id = check_service
+    service.accept_snapshot(product_id, replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    )))
+
+    outcome = service.accept_snapshot(product_id, snapshot())
+
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
 
 
 def test_unchanged_checks_store_at_most_one_daily_checkpoint(check_service):
@@ -374,9 +431,38 @@ def dell_entry_check(check_service):
 
 
 @pytest.mark.anyio
+async def test_usable_dell_original_entry_skips_rejected_direct_link(dell_entry_check):
+    service, factory, product_id, canonical, original, trusted = dell_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            if str(url) == canonical:
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == original
+            return None, replace(trusted, price=Money("USD", 279999))
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "ok"
+    assert calls == [original]
+    with factory() as session:
+        product = session.get(Product, product_id)
+        assert product.canonical_url == canonical
+        assert product.requested_url == original
+        assert product.consecutive_failures == 0
+        assert session.scalar(select(Observation.price_minor).order_by(
+            Observation.id.desc()
+        )) == 279999
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("status", [403, 404, 410])
 @pytest.mark.parametrize("recovering", [False, True])
-async def test_blocked_dell_canonical_retries_original_entry_with_same_selection(
+async def test_blocked_dell_original_retries_direct_link_with_same_selection(
     dell_entry_check, status, recovering,
 ):
     service, factory, product_id, canonical, original, trusted = dell_entry_check
@@ -391,16 +477,16 @@ async def test_blocked_dell_canonical_retries_original_entry_with_same_selection
         async def acquire(self, url, _adapter, dell_selection):
             calls.append(str(url))
             assert dell_selection == {"Graphics Card": "RTX 5090"}
-            if str(url) == canonical:
-                raise AcquisitionError("Unavailable canonical", status_code=status)
-            assert str(url) == original
+            if str(url) == original:
+                raise AcquisitionError("Unavailable original", status_code=status)
+            assert str(url) == canonical
             return None, replace(trusted, price=Money("USD", 279999))
 
     service.pipeline = Pipeline()
     outcome = await service.check_product(product_id, "scheduled")
 
     assert outcome.status == "ok"
-    assert calls == [canonical, original]
+    assert calls == [original, canonical]
     assert [e.kind for e in outcome.events] == ["price_changed"] + (
         ["check_recovered"] if recovering else []
     )
@@ -418,20 +504,21 @@ async def test_blocked_dell_canonical_retries_original_entry_with_same_selection
 
 
 @pytest.mark.anyio
-async def test_failed_original_entry_counts_as_one_failed_check(dell_entry_check):
+async def test_two_failed_entries_count_once_and_preserve_both_failure_reasons(dell_entry_check):
     service, factory, product_id, canonical, original, _ = dell_entry_check
     calls = []
 
     class Pipeline:
         async def acquire(self, url, _adapter, dell_selection):
             calls.append(str(url))
-            raise AcquisitionError("HTTP 403", status_code=403)
+            status = 403 if str(url) == original else 404
+            raise AcquisitionError(f"HTTP {status}", status_code=status)
 
     service.pipeline = Pipeline()
     outcome = await service.check_product(product_id, "scheduled")
 
     assert outcome.status == "failed"
-    assert calls == [canonical, original]
+    assert calls == [original, canonical]
     assert outcome.events == []
     with factory() as session:
         assert session.get(Product, product_id).consecutive_failures == 1
@@ -439,6 +526,11 @@ async def test_failed_original_entry_counts_as_one_failed_check(dell_entry_check
             CheckRun.trigger == "scheduled"
         )) == 1
         assert session.scalar(select(func.count(Observation.id))) == 1
+        run = session.scalar(select(CheckRun).where(CheckRun.trigger == "scheduled"))
+        assert "原始入口 HTTP 403" in run.error_message
+        assert "直达入口" in run.error_message
+        assert "HTTP 404" in run.error_message
+        assert "https://" not in run.error_message
 
 
 @pytest.mark.anyio
@@ -475,19 +567,19 @@ async def test_original_entry_cannot_replace_monitored_identity(dell_entry_check
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("original,status", [
-    ("https://www.dell.com/en-us/shop/spd/alienware", None),
-    ("https://www.dell.com/en-us/shop/spd/alienware", 429),
-    ("https://www.dell.com/en-us/shop/spd/alienware", 500),
-    ("https://www.dell.com/en-us/shop/spd/alienware/sku_01", 403),
-    ("https://other.example/en-us/shop/spd/alienware", 403),
-    ("https://www.dell.com/en-uk/shop/spd/alienware", 403),
-    ("http://www.dell.com/en-us/shop/spd/alienware", 403),
-    ("https://www.dell.com:8443/en-us/shop/spd/alienware", 403),
-    ("https://user:password@www.dell.com/en-us/shop/spd/alienware", 403),
+@pytest.mark.parametrize("original,status,expected_entry", [
+    ("https://www.dell.com/en-us/shop/spd/alienware", None, "original"),
+    ("https://www.dell.com/en-us/shop/spd/alienware", 429, "original"),
+    ("https://www.dell.com/en-us/shop/spd/alienware", 500, "original"),
+    ("https://www.dell.com/en-us/shop/spd/alienware/sku_01", 403, "canonical"),
+    ("https://other.example/en-us/shop/spd/alienware", 403, "canonical"),
+    ("https://www.dell.com/en-uk/shop/spd/alienware", 403, "canonical"),
+    ("http://www.dell.com/en-us/shop/spd/alienware", 403, "canonical"),
+    ("https://www.dell.com:8443/en-us/shop/spd/alienware", 403, "canonical"),
+    ("https://user:password@www.dell.com/en-us/shop/spd/alienware", 403, "canonical"),
 ])
-async def test_original_entry_retry_is_bounded_to_safe_distinct_us_dell_url(
-    dell_entry_check, original, status,
+async def test_preferred_entry_and_retry_are_bounded_to_safe_distinct_us_dell_url(
+    dell_entry_check, original, status, expected_entry,
 ):
     service, factory, product_id, canonical, _, _ = dell_entry_check
     with factory.begin() as session:
@@ -502,7 +594,60 @@ async def test_original_entry_retry_is_bounded_to_safe_distinct_us_dell_url(
     service.pipeline = Pipeline()
     outcome = await service.check_product(product_id, "scheduled")
     assert outcome.status == "failed"
-    assert calls == [canonical]
+    assert calls == [original if expected_entry == "original" else canonical]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("last_error,expected_cause", [
+    (UnsafeUrlError("The product hostname could not be resolved"), "could not be resolved"),
+    (RuntimeError("private-secret-must-not-be-logged"), "RuntimeError"),
+])
+async def test_second_entry_safety_or_unexpected_error_keeps_safe_diagnostics(
+    dell_entry_check, last_error, expected_cause,
+):
+    service, factory, product_id, canonical, original, _ = dell_entry_check
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            if str(url) == original:
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == canonical
+            raise last_error
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == "failed"
+    with factory() as session:
+        run = session.scalar(select(CheckRun).where(CheckRun.trigger == "scheduled"))
+        assert "原始入口 HTTP 403" in (run.error_message or "")
+        assert expected_cause in run.error_message
+        assert "private-secret" not in run.error_message
+        assert session.get(Product, product_id).consecutive_failures == 1
+
+
+@pytest.mark.anyio
+async def test_both_entry_failures_keep_retry_and_notification_policy(dell_entry_check):
+    service, factory, product_id, _, _, _ = dell_entry_check
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+    service.pipeline = Pipeline()
+    first = await service.check_product(product_id, "scheduled")
+    assert first.events == []
+    second = await service.check_product(product_id, "scheduled")
+    assert [event.kind for event in second.events] == ["check_failed"]
+    with factory() as session:
+        product = session.get(Product, product_id)
+        assert product.consecutive_failures == 2
+        assert product.failure_reported is True
+        alert = session.scalar(select(NotificationDelivery).where(
+            NotificationDelivery.event_type == "check_failed"
+        ))
+        assert "原始入口 HTTP 403" in alert.message_text
+        assert "直达入口" in alert.message_text
+        assert "$2,999.99" not in alert.message_text
 
 
 @pytest.mark.anyio

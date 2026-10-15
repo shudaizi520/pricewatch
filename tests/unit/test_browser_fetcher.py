@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from httpx import URL
@@ -10,6 +11,7 @@ from pricewatch.adapters.base import ExtractionError
 from pricewatch.fetching.browser import (
     AcquisitionPipeline,
     BrowserFetcher,
+    navigate_product_page,
     navigate_with_retry,
     prepare_dell_configurator,
 )
@@ -68,6 +70,28 @@ async def test_navigation_does_not_retry_a_blocked_page():
     with pytest.raises(PlaywrightError, match="ERR_BLOCKED_BY_CLIENT"):
         await navigate_with_retry(page, "https://www.dell.com/example")
     assert page.attempts == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("url", [
+    "https://shop.example/en-us/shop/item",
+    "https://www.dell.com/en-uk/shop/item",
+    "https://www.dell.com/en-us",
+    "http://www.dell.com/en-us/shop/item",
+    "https://www.dell.com:8443/en-us/shop/item",
+    "https://user:secret@www.dell.com/en-us/shop/item",
+])
+async def test_session_recovery_is_limited_to_public_https_us_dell_product_entry(url):
+    calls = []
+    denied = SimpleNamespace(status=403)
+
+    class Page:
+        async def goto(self, target, **_kwargs):
+            calls.append(target)
+            return denied
+
+    assert await navigate_product_page(Page(), url) is denied
+    assert calls == [url]
 
 
 @pytest.mark.anyio
@@ -139,6 +163,89 @@ async def test_browser_reports_actual_blocking_status(monkeypatch):
     assert "edge.example" in str(caught.value)
     assert "private-query" not in str(caught.value)
     assert "private-cookie" not in str(caught.value)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("initial,home,final,home_url,expected_status,expected_calls", [
+    (403, 200, 200, "https://www.dell.com/en-us", 200, ["product", "home", "product"]),
+    (403, 200, 403, "https://www.dell.com/en-us", 403, ["product", "home", "product"]),
+    (403, 403, 200, "https://www.dell.com/en-us", 403, ["product", "home"]),
+    (403, None, 200, "https://www.dell.com/en-us", 403, ["product", "home"]),
+    (403, "network-change", 200, "https://www.dell.com/en-us", 403, ["product", "home"]),
+    (403, 200, "network-change", "https://www.dell.com/en-us", None,
+     ["product", "home", "product"]),
+    (403, 200, 200, "https://other.example/en-us", 403, ["product", "home"]),
+    (200, 200, 200, "https://www.dell.com/en-us", 200, ["product"]),
+    (429, 200, 200, "https://www.dell.com/en-us", 429, ["product"]),
+    (500, 200, 200, "https://www.dell.com/en-us", 500, ["product"]),
+])
+async def test_dell_403_initializes_normal_session_once_without_accepting_homepage(
+    monkeypatch, initial, home, final, home_url, expected_status, expected_calls,
+):
+    target = "https://www.dell.com/en-us/shop/laptop-computers/spd/alienware16area51aa16250"
+    calls = []
+
+    class Page:
+        url = target
+
+        async def goto(self, url, **_kwargs):
+            is_home = url == "https://www.dell.com/en-us"
+            calls.append("home" if is_home else "product")
+            self.url = home_url if is_home else target
+            if is_home and home is None:
+                raise PlaywrightError("private-url-and-cookie")
+            if (is_home and home == "network-change") or (
+                not is_home and len(calls) > 1 and final == "network-change"
+            ):
+                raise PlaywrightError("net::ERR_NETWORK_CHANGED")
+            status = home if is_home else (initial if len(calls) == 1 else final)
+            return SimpleNamespace(status=status, url=self.url, headers={"server": "AkamaiGHost"})
+
+        async def wait_for_load_state(self, state, timeout):
+            assert state == "load" and timeout <= 10000
+
+        async def wait_for_timeout(self, _milliseconds):
+            pass
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            pass
+
+        async def content(self):
+            assert self.url == target
+            return "<html><body>Dell Price $6,749.99</body></html>"
+
+    class Browser:
+        async def new_context(self, **_kwargs):
+            return self
+
+        async def new_page(self):
+            return Page()
+
+        async def close(self):
+            pass
+
+    class PlaywrightContext:
+        async def __aenter__(self):
+            async def launch(**_kwargs):
+                return Browser()
+            return SimpleNamespace(chromium=SimpleNamespace(launch=launch))
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", PlaywrightContext)
+    fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
+    if expected_status == 200:
+        acquired = await fetcher.fetch(URL(target))
+        assert acquired.status == 200
+        assert acquired.final_url == target
+        assert b"$6,749.99" in acquired.body
+    else:
+        with pytest.raises(AcquisitionError) as caught:
+            await fetcher.fetch(URL(target))
+        assert caught.value.status_code == expected_status
+        assert "private-url-and-cookie" not in str(caught.value)
+    assert calls == expected_calls
 
 
 @pytest.mark.anyio
