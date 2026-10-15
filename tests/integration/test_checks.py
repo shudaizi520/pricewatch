@@ -180,6 +180,62 @@ def test_missing_packaging_does_not_hide_real_gpu_change(check_service):
         ) == 1
 
 
+@pytest.mark.parametrize("amount,expected_events", [(299999, []), (279999, ["price_changed"])])
+def test_known_bundled_software_description_change_does_not_pause_hardware(
+    check_service, amount, expected_events,
+):
+    service, factory, product_id = check_service
+    previous = replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090",
+        extras={"Systems Management": "Additional Software and Sanbao warranty card"},
+    ))
+    service.accept_snapshot(product_id, previous)
+    current = replace(previous, configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    ), price=Money("USD", amount))
+
+    outcome = service.accept_snapshot(product_id, current)
+
+    assert outcome.status == "ok"
+    assert outcome.product.status == "active"
+    assert [event.kind for event in outcome.events] == expected_events
+    with factory() as session:
+        assert session.scalar(select(func.count(Observation.id)).where(
+            Observation.trusted.is_(False)
+        )) == 0
+
+
+def test_other_management_software_choice_still_requires_confirmation(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    )))
+    changed = replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Paid Fleet Management Bundle"},
+    ))
+
+    outcome = service.accept_snapshot(product_id, changed)
+
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+    with factory() as session:
+        assert session.scalar(
+            select(func.count(Observation.id)).where(Observation.trusted.is_(True))
+        ) == 1
+
+
+def test_missing_management_software_group_still_requires_confirmation(check_service):
+    service, _, product_id = check_service
+    service.accept_snapshot(product_id, replace(snapshot(), configuration=ProductConfiguration(
+        gpu="RTX 5090", extras={"Systems Management": "Dell Windows Application"},
+    )))
+
+    outcome = service.accept_snapshot(product_id, snapshot())
+
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+
+
 def test_unchanged_checks_store_at_most_one_daily_checkpoint(check_service):
     service, factory, product_id = check_service
     for hour in (1, 7, 13, 19):

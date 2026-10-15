@@ -30,6 +30,11 @@ _NON_PRICE_EXTRA_GROUPS = frozenset(
     )
 )
 
+_BUNDLED_SOFTWARE_DESCRIPTIONS = frozenset(
+    _normalize(label)
+    for label in ("Additional Software and Sanbao warranty card", "Dell Windows Application")
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Money:
@@ -103,7 +108,12 @@ class ProductConfiguration:
             for key in ("cpu", "gpu", "memory", "storage", "display", "os")
         }
         parts["extras"] = {
-            key: _normalize(value)
+            key: (
+                "dellwindowsapplication"
+                if _normalize(key) == "systemsmanagement"
+                and _normalize(value) in _BUNDLED_SOFTWARE_DESCRIPTIONS
+                else _normalize(value)
+            )
             for key, value in sorted(self.extras.items())
             if _normalize(key) not in _NON_PRICE_EXTRA_GROUPS
         }
