@@ -119,6 +119,65 @@ def test_keyboard_change_alert_names_both_keyboards_without_folded_options(check
         assert "Wi-Fi 7" not in alert.message_text
 
 
+@pytest.mark.parametrize("amount, expected_events", [(299999, []), (279999, ["price_changed"])])
+def test_missing_shipping_packaging_keeps_monitoring_original_hardware(
+    check_service, amount, expected_events,
+):
+    service, factory, product_id = check_service
+    original = replace(
+        snapshot(),
+        configuration=ProductConfiguration(
+            gpu="RTX 5090",
+            extras={
+                "Keyboard": "No Keyboard Selected",
+                "Packaging": "Kit,Shipping Material Box - KIT,SHP MTL,ANW,CITADEL,ARL,BA",
+                "Documentation": "Regular - No Documentation",
+            },
+        ),
+    )
+    service.accept_snapshot(product_id, original)
+    current = replace(
+        original,
+        configuration=ProductConfiguration(
+            gpu="RTX 5090", extras={"Keyboard": "No Keyboard Selected"},
+        ),
+        price=Money("USD", amount),
+    )
+
+    outcome = service.accept_snapshot(product_id, current)
+
+    assert outcome.product.status == "active"
+    assert [event.kind for event in outcome.events] == expected_events
+    with factory() as session:
+        assert session.scalar(
+            select(func.count(Observation.id)).where(Observation.trusted.is_(False))
+        ) == 0
+        assert session.scalar(
+            select(func.count(NotificationDelivery.id)).where(
+                NotificationDelivery.event_type == "configuration_changed"
+            )
+        ) == 0
+
+
+def test_missing_packaging_does_not_hide_real_gpu_change(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(
+        product_id,
+        replace(snapshot(), configuration=ProductConfiguration(
+            gpu="RTX 5090", extras={"Packaging": "Shipping box"},
+        )),
+    )
+
+    outcome = service.accept_snapshot(product_id, snapshot(gpu="RTX 5080", amount=249999))
+
+    assert outcome.product.status == "needs_attention"
+    assert [event.kind for event in outcome.events] == ["configuration_changed"]
+    with factory() as session:
+        assert session.scalar(
+            select(func.count(Observation.id)).where(Observation.trusted.is_(True))
+        ) == 1
+
+
 def test_unchanged_checks_store_at_most_one_daily_checkpoint(check_service):
     service, factory, product_id = check_service
     for hour in (1, 7, 13, 19):

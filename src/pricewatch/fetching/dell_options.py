@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from playwright.async_api import Locator, Page, Response
 
+from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import ConfiguredOffer
 
 
@@ -62,6 +63,8 @@ def selected_from_html(html: str) -> dict[str, str]:
 
 
 def active_price_minor(visible_text: str) -> int:
+    if "price momentarily unavailable" in visible_text.casefold():
+        raise AcquisitionError("戴尔官网提示价格暂不可用")
     values = re.findall(r"Dell Price\s*\$\s*([\d,]+\.\d{2})(?!\d)", visible_text, re.I)
     if len(set(values)) != 1:
         raise ValueError("无法唯一确认戴尔当前美元成交价")
@@ -102,13 +105,14 @@ async def settled_offer(
             price = active_price_minor(await page.evaluate("document.body.innerText"))
         except ValueError:
             price = None
-        if changed and not quote_confirmed and price == baseline_price and quote_responses:
+        needs_quote = changed and (baseline_price is None or price == baseline_price)
+        if needs_quote and not quote_confirmed and quote_responses:
             # Reading the completed quote avoids Playwright finished()'s orphaned
             # target-close watcher, while still rejecting incomplete/failed responses.
             await quote_responses[-1].body()
             quote_confirmed = True
         # Dell can mark the new option selected before its asynchronous quote arrives.
-        if changed and not quote_confirmed and price == baseline_price:
+        if needs_quote and not quote_confirmed:
             price = None
         stable_reads = stable_reads + 1 if price is not None and price == last_price else 1
         if price is not None and stable_reads >= 3:
@@ -131,7 +135,12 @@ async def apply_selection(page: Page, recipe: dict[str, str]) -> ConfiguredOffer
         selected = selected_from_html(await page.content())
         if selected.get(group) == label:
             continue
-        baseline_price = active_price_minor(await page.evaluate("document.body.innerText"))
+        try:
+            baseline_price = active_price_minor(await page.evaluate("document.body.innerText"))
+        except ValueError:
+            # Some Dell pages expose options before any initial purchase price.
+            # The click must then produce its own completed quote before acceptance.
+            baseline_price = None
         option_group = page.get_by_role("group", name=group, exact=True)
         wrappers = option_group.locator(".option-grid-wrapper")
         matching = []
