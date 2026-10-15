@@ -19,6 +19,7 @@ from pricewatch.fetching.dell_options import (
     selected_from_html,
     settled_offer,
 )
+from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import ConfiguredOffer
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "dell" / "options.html"
@@ -128,6 +129,41 @@ def test_configured_price_uses_visible_purchase_block_not_static_jsonld():
 
 def test_active_browser_text_accepts_dell_whitespace_and_same_price_repeated():
     assert active_price_minor("Dell Price\n$ 5,099.99\nDell Price $5,099.99") == 509999
+
+
+@pytest.mark.parametrize("stale_price", ["", " Dell Price $3,999.99"])
+def test_explicit_dell_price_unavailable_is_not_a_missing_or_stale_quote(stale_price):
+    text = "Sorry, price momentarily unavailable. Refresh to try again or check back later."
+    with pytest.raises(AcquisitionError, match="戴尔官网提示价格暂不可用"):
+        active_price_minor(text + stale_price)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["selection", "settling"])
+async def test_dell_price_unavailable_preserves_specific_failure_during_selection(stage):
+    class Page:
+        async def content(self):
+            return FIXTURE.read_text()
+
+        async def evaluate(self, _script):
+            return "Sorry, price momentarily unavailable. Refresh to try again or check back later."
+
+        async def wait_for_timeout(self, _milliseconds):
+            return None
+
+        def get_by_role(self, *_args, **_kwargs):
+            raise AssertionError("Unavailable Dell quote must stop before choosing options")
+
+    with pytest.raises(AcquisitionError, match="戴尔官网提示价格暂不可用"):
+        if stage == "selection":
+            await apply_selection(
+                Page(), {"Graphics Card": "NVIDIA® GeForce RTX™ 5090 24 GB GDDR7"},
+            )
+        else:
+            await settled_offer(
+                Page(), {"Graphics Card": "NVIDIA® GeForce RTX™ 5070 8 GB GDDR7"},
+                baseline_price=None, changed=True, quote_confirmed=True,
+            )
 
 
 @pytest.mark.parametrize("price", ["$4,000", "EUR 4,000.00", "-$1.00"])

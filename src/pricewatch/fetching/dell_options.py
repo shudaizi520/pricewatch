@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from bs4.element import Tag
 from playwright.async_api import Locator, Page, Response
 
+from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.types import ConfiguredOffer
 
 
@@ -62,6 +63,8 @@ def selected_from_html(html: str) -> dict[str, str]:
 
 
 def active_price_minor(visible_text: str) -> int:
+    if "price momentarily unavailable" in visible_text.casefold():
+        raise AcquisitionError("戴尔官网提示价格暂不可用")
     values = re.findall(r"Dell Price\s*\$\s*([\d,]+\.\d{2})(?!\d)", visible_text, re.I)
     if len(set(values)) != 1:
         raise ValueError("无法唯一确认戴尔当前美元成交价")
