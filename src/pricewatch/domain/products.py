@@ -22,6 +22,7 @@ _NON_PRICE_EXTRA_GROUPS = frozenset(
         "Primary Battery",
         "Power Supply",
         "Documentation",
+        "Packaging",
         "Power Cord",
         "Camera",
         "Keep - specific to Alienware",
