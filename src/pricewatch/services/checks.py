@@ -15,7 +15,7 @@ from pricewatch.adapters.registry import AdapterRegistry
 from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductConfiguration, ProductSnapshot
-from pricewatch.fetching.browser import AcquisitionPipeline
+from pricewatch.fetching.browser import AcquisitionPipeline, DellConfiguratorUnavailable
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.notifications import NotificationService, format_message
@@ -415,12 +415,18 @@ class CheckService:
                         dell_selection=dell_selection,
                     )
                 except AcquisitionError as error:
-                    if not prefer_original or error.status_code not in {403, 404, 410}:
+                    if not prefer_original or (
+                        error.status_code not in {403, 404, 410}
+                        and not isinstance(error, DellConfiguratorUnavailable)
+                    ):
                         raise
-                    # SKU-specific entry pages are intermittently rejected while the
-                    # original family entry works. Prefer the latter, keeping one
-                    # bounded direct-link fallback and every quote/identity guard.
-                    first_entry_failure = f"原始入口 HTTP {error.status_code}"
+                    # A family can also be HTTP 200 but expose only fixed offers.
+                    # Try the saved SKU entry once, without relaxing quote/identity guards.
+                    first_entry_failure = (
+                        f"原始入口: {error}"
+                        if isinstance(error, DellConfiguratorUnavailable)
+                        else f"原始入口 HTTP {error.status_code}"
+                    )
                     _, snapshot = await self.pipeline.acquire(
                         url, adapter, dell_selection=dell_selection
                     )
