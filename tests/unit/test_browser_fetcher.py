@@ -641,6 +641,59 @@ async def test_missing_dell_customizer_reports_the_failed_page_stage():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("final_url,redirected", [
+    ("https://www.dell.com/en-us/shop/cty/spd/alienwarearea51aat2265", True),
+    ("https://www.dell.com/en-us/shop/desktop-computers/spd/alienwarearea51aat2265", True),
+    ("https://www.dell.com/en-us/shop/cty/spd/alienware18area51aa18250", False),
+    ("https://other.example/en-us/shop/cty/spd/alienwarearea51aat2265", False),
+    ("https://www.dell.com/en-ca/shop/cty/spd/alienwarearea51aat2265", False),
+])
+async def test_redirected_sku_without_customizer_reports_missing_original_quote(
+    monkeypatch, final_url, redirected,
+):
+    class MissingEntry:
+        async def count(self):
+            return 0
+
+    class PresetOnlyPage:
+        url = (
+            "https://www.dell.com/en-us/shop/desktop-computers/spd/"
+            "alienwarearea51aat2265/aat2265_reg_01?token=private-query"
+        )
+
+        def on(self, *_args):
+            pass
+
+        async def goto(self, *_args, **_kwargs):
+            self.url = final_url
+            return SimpleNamespace(status=200, url=final_url)
+
+        async def wait_for_function(self, *_args, **_kwargs):
+            raise PlaywrightTimeoutError("private-query")
+
+        def get_by_text(self, text, exact=False):
+            assert text == "Build your own" and exact
+            return MissingEntry()
+
+        async def content(self):
+            return "<html><body>Select a configuration. Dell Price $7,999.99</body></html>"
+
+    with pytest.raises(AcquisitionError) as caught:
+        await _fetch_dell_scenario(
+            monkeypatch, PresetOnlyPage(), selection={"Graphics Card": "RTX 5090"},
+        )
+    message = str(caught.value)
+    if redirected:
+        assert "原定制 SKU 入口已跳转到配置列表" in message
+        assert "无法核验原配置报价" in message
+    else:
+        assert "未找到可用的自定义配置器入口" in message
+    assert "$7,999.99" not in message
+    assert "private-query" not in message
+    assert "https://" not in message
+
+
+@pytest.mark.anyio
 async def test_unusable_dell_customizer_entry_reports_the_failed_page_stage():
     class BrokenEntry:
         @property

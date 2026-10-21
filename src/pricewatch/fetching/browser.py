@@ -57,6 +57,10 @@ DELL_CONFIG_READY_SCRIPT = r"""() => {
 }"""
 
 
+class DellConfiguratorUnavailable(AcquisitionError):
+    """The entry page has no usable customizer; another verified entry may work."""
+
+
 async def navigate_with_retry(page: Page, url: str) -> Response | None:
     try:
         return await page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -116,7 +120,7 @@ async def prepare_dell_configurator(page: Page) -> None:
                 # New family pages require activating the public custom-order button.
                 await build_your_own.last.click()
     except PlaywrightError as error:
-        raise AcquisitionError("戴尔自定义配置器入口无法激活") from error
+        raise DellConfiguratorUnavailable("戴尔自定义配置器入口无法激活") from error
 
     try:
         await page.wait_for_function(DELL_OPTIONS_READY_SCRIPT, timeout=15000)
@@ -125,7 +129,7 @@ async def prepare_dell_configurator(page: Page) -> None:
             message = "戴尔“Build your own”区域已出现, 但自定义配置器未加载"
         else:
             message = "戴尔页面未找到可用的自定义配置器入口"
-        raise AcquisitionError(message) from error
+        raise DellConfiguratorUnavailable(message) from error
 
 
 class BrowserFetcher:
@@ -256,7 +260,29 @@ class BrowserFetcher:
                         and "/spd/alienware" in url.path
                     ):
                         if dell_selection is not None or dell_catalog:
-                            await prepare_dell_configurator(page)
+                            try:
+                                await prepare_dell_configurator(page)
+                            except DellConfiguratorUnavailable as error:
+                                final = URL(page.url)
+                                requested_parts = (
+                                    url.path.partition("/spd/")[2].strip("/").split("/")
+                                )
+                                final_parts = final.path.partition("/spd/")[2].strip("/").split("/")
+                                if (
+                                    len(requested_parts) == 2
+                                    and len(final_parts) == 1
+                                    and requested_parts[0].casefold() == final_parts[0].casefold()
+                                    and final.scheme == url.scheme == "https"
+                                    and final.host == url.host
+                                    and final.port == url.port
+                                    and not final.userinfo
+                                    and final.path.startswith("/en-us/shop/")
+                                ):
+                                    raise DellConfiguratorUnavailable(
+                                        "戴尔原定制 SKU 入口已跳转到配置列表; "
+                                        "当前无法核验原配置报价"
+                                    ) from error
+                                raise
                         else:
                             try:
                                 await page.wait_for_function(DELL_READY_SCRIPT, timeout=15000)

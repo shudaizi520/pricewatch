@@ -5,12 +5,15 @@ from datetime import UTC, datetime
 
 import pytest
 from freezegun import freeze_time
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from sqlalchemy import func, select
 
 from pricewatch.db.base import Base
 from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
+from pricewatch.fetching.browser import prepare_dell_configurator
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.checks import CheckService
@@ -501,6 +504,184 @@ async def test_blocked_dell_original_retries_direct_link_with_same_selection(
             ))
             assert "价格: $2,799.99" in alert.message_text.splitlines()
             assert "$2,999.99" not in alert.message_text
+
+
+async def _customizer_entry_failure(stage):
+    class Entry:
+        @property
+        def last(self):
+            return self
+
+        async def count(self):
+            return 0 if stage == "missing" else 1
+
+        async def scroll_into_view_if_needed(self):
+            if stage == "activation":
+                raise PlaywrightError("private-token-and-url")
+
+        async def click(self):
+            pass
+
+    class FamilyPage:
+        async def wait_for_function(self, *_args, **_kwargs):
+            raise PlaywrightTimeoutError("private-token-and-url")
+
+        def get_by_text(self, text, exact=False):
+            assert text == "Build your own" and exact
+            return Entry()
+
+    with pytest.raises(AcquisitionError) as failure:
+        await prepare_dell_configurator(FamilyPage())
+    return failure.value
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["missing", "activation", "loading"])
+@pytest.mark.parametrize("recovering", [False, True])
+async def test_http_200_family_without_customizer_retries_saved_sku_entry(
+    dell_entry_check, stage, recovering,
+):
+    service, factory, product_id, canonical, original, trusted = dell_entry_check
+    unavailable = await _customizer_entry_failure(stage)
+    calls = []
+    if recovering:
+        with factory.begin() as session:
+            product = session.get(Product, product_id)
+            product.consecutive_failures = 2
+            product.failure_reported = True
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            if str(url) == original:
+                raise unavailable
+            assert str(url) == canonical
+            return None, replace(trusted, price=Money("USD", 279999))
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "ok"
+    assert calls == [original, canonical]
+    assert [e.kind for e in outcome.events] == ["price_changed"] + (
+        ["check_recovered"] if recovering else []
+    )
+    with factory() as session:
+        product = session.get(Product, product_id)
+        assert product.consecutive_failures == 0
+        assert product.sku == "sku_01"
+        assert product.requested_url == original
+        assert session.scalars(select(Observation.price_minor).where(
+            Observation.trusted.is_(True)
+        ).order_by(Observation.id)).all() == [299999, 279999]
+        if recovering:
+            alert = session.scalar(select(NotificationDelivery).where(
+                NotificationDelivery.event_type == "check_recovered"
+            ))
+            assert "价格: $2,799.99" in alert.message_text.splitlines()
+
+
+@pytest.mark.anyio
+async def test_unavailable_customizer_then_blocked_sku_preserves_both_errors_once(
+    dell_entry_check,
+):
+    service, factory, product_id, canonical, original, _ = dell_entry_check
+    unavailable = await _customizer_entry_failure("missing")
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            if str(url) == original:
+                raise unavailable
+            assert str(url) == canonical
+            raise AcquisitionError("商品页面返回 HTTP 403", status_code=403)
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "failed"
+    assert calls == [original, canonical]
+    with factory() as session:
+        assert session.get(Product, product_id).consecutive_failures == 1
+        assert session.scalar(select(func.count(CheckRun.id)).where(
+            CheckRun.trigger == "scheduled"
+        )) == 1
+        assert session.scalar(select(func.count(Observation.id))) == 1
+        run = session.scalar(select(CheckRun).where(CheckRun.trigger == "scheduled"))
+        assert "自定义配置器入口" in run.error_message
+        assert "HTTP 403" in run.error_message
+        assert "直达入口" in run.error_message
+        assert "private-token" not in run.error_message
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mutation", ["sku", "gpu", "currency", "selection"])
+async def test_customizer_fallback_never_accepts_a_different_monitored_offer(
+    dell_entry_check, mutation,
+):
+    service, factory, product_id, canonical, original, trusted = dell_entry_check
+    unavailable = await _customizer_entry_failure("missing")
+    current = replace(trusted, price=Money("USD", 279999))
+    if mutation == "sku":
+        current = replace(current, identity=ProductIdentity("dell-us", "other_sku"))
+    elif mutation == "currency":
+        current = replace(current, price=Money("EUR", 279999))
+    else:
+        current = replace(current, configuration=ProductConfiguration(
+            gpu="RTX 5080", extras={"Graphics Card": "RTX 5080" if mutation == "selection"
+                                  else "RTX 5090"},
+        ))
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            if str(url) == original:
+                raise unavailable
+            assert str(url) == canonical
+            return None, current
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert calls == [original, canonical]
+    assert outcome.status == ("failed" if mutation == "selection" else "needs_attention")
+    with factory() as session:
+        trusted_rows = session.scalars(
+            select(Observation).where(Observation.trusted.is_(True))
+        ).all()
+        assert [(row.currency, row.price_minor) for row in trusted_rows] == [("USD", 299999)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("original", [
+    "https://www.dell.com/en-us/shop/spd/alienware/sku_01",
+    "https://other.example/en-us/shop/spd/alienware",
+    "https://www.dell.com/en-uk/shop/spd/alienware",
+    "https://www.dell.com:8443/en-us/shop/spd/alienware",
+    "https://user:secret@www.dell.com/en-us/shop/spd/alienware",
+])
+async def test_customizer_failure_does_not_expand_entry_retry_to_unsafe_or_identical_url(
+    dell_entry_check, original,
+):
+    service, factory, product_id, canonical, _, _ = dell_entry_check
+    with factory.begin() as session:
+        session.get(Product, product_id).requested_url = original
+    unavailable = await _customizer_entry_failure("missing")
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            raise unavailable
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+
+    assert outcome.status == "failed"
+    assert calls == [canonical]
 
 
 @pytest.mark.anyio
