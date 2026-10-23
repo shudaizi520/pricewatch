@@ -9,14 +9,15 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from sqlalchemy import func, select
 
+from pricewatch.adapters.base import ExtractionError
 from pricewatch.db.base import Base
-from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
+from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product, Setting
 from pricewatch.db.session import create_engine_and_session
 from pricewatch.domain.products import Money, ProductConfiguration, ProductIdentity, ProductSnapshot
 from pricewatch.fetching.browser import prepare_dell_configurator
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError
-from pricewatch.services.checks import CheckService
+from pricewatch.services.checks import CheckService, dell_entry_key
 
 
 @pytest.fixture
@@ -829,6 +830,190 @@ async def test_both_entry_failures_keep_retry_and_notification_policy(dell_entry
         assert "原始入口 HTTP 403" in alert.message_text
         assert "直达入口" in alert.message_text
         assert "$2,999.99" not in alert.message_text
+
+
+@pytest.fixture
+def laptop_entry_check(dell_entry_check):
+    service, factory, product_id, _, _, trusted = dell_entry_check
+    old = "https://www.dell.com/en-us/shop/laptop-computers/spd/alienware18area51aa18250"
+    new = old.replace("/laptop-computers/", "/dell-laptops/")
+    sku = "aa18250_reg_01"
+    trusted = replace(trusted, identity=ProductIdentity("dell-us", sku),
+                      canonical_url=old + "/" + sku)
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.requested_url = old
+        product.canonical_url = trusted.canonical_url
+        product.sku = sku
+    return service, factory, product_id, old, new, trusted
+
+
+@pytest.mark.anyio
+async def test_category_recovery_learns_only_validated_canonical_and_reuses_it(laptop_entry_check):
+    service, factory, product_id, old, new, trusted = laptop_entry_check
+    calls = []
+    with factory.begin() as session:
+        product = session.get(Product, product_id)
+        product.consecutive_failures = 2
+        product.failure_reported = True
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            if "/laptop-computers/" in str(url):
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == new
+            return None, replace(trusted, canonical_url=new + "/aa18250_reg_01",
+                                 price=Money("USD", 679999))
+
+    service.pipeline = Pipeline()
+    first = await service.check_product(product_id, "scheduled")
+    assert first.status == "ok"
+    assert calls == [old, trusted.canonical_url, new]
+    assert [event.kind for event in first.events] == ["price_changed", "check_recovered"]
+    with factory() as session:
+        product = session.get(Product, product_id)
+        assert product.requested_url == old
+        assert product.canonical_url == new + "/aa18250_reg_01"
+        assert product.consecutive_failures == 0
+        assert session.get(Setting, dell_entry_key(product_id)).value_text == new
+        notice = session.scalar(select(NotificationDelivery).where(
+            NotificationDelivery.event_type == "check_recovered"
+        ))
+        assert "$6,799.99" in notice.message_text
+    calls.clear()
+    second = await service.check_product(product_id, "scheduled")
+    assert second.status == "ok"
+    assert calls == [new]
+    assert second.events == []
+
+
+@pytest.mark.anyio
+async def test_recovery_remembers_working_direct_link_without_changing_original(laptop_entry_check):
+    service, factory, product_id, old, _, trusted = laptop_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            if str(url) == old:
+                raise AcquisitionError("HTTP 403", status_code=403)
+            assert str(url) == trusted.canonical_url
+            return None, trusted
+
+    service.pipeline = Pipeline()
+    assert (await service.check_product(product_id, "scheduled")).status == "ok"
+    assert calls == [old, trusted.canonical_url]
+    calls.clear()
+    service = CheckService(factory, pipeline=Pipeline())
+    assert (await service.check_product(product_id, "scheduled")).status == "ok"
+    assert calls == [trusted.canonical_url]
+    with factory() as session:
+        assert session.get(Product, product_id).requested_url == old
+        assert session.get(Setting, dell_entry_key(product_id)).value_text == trusted.canonical_url
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mutation", ["sku", "gpu", "currency", "selection"])
+async def test_category_recovery_does_not_learn_or_accept_mismatched_quote(
+    laptop_entry_check, mutation,
+):
+    service, factory, product_id, old, new, trusted = laptop_entry_check
+    current = replace(trusted, canonical_url=new + "/aa18250_reg_01")
+    if mutation == "sku":
+        current = replace(current, identity=ProductIdentity("dell-us", "different_sku"))
+    elif mutation == "currency":
+        current = replace(current, price=Money("EUR", 679999))
+    else:
+        current = replace(current, configuration=ProductConfiguration(
+            gpu="RTX 5080", extras={"Graphics Card": "RTX 5080" if mutation == "selection"
+                                  else "RTX 5090"},
+        ))
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            if "/laptop-computers/" in str(url):
+                raise AcquisitionError("HTTP 403", status_code=403)
+            return None, current
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == ("failed" if mutation == "selection" else "needs_attention")
+    with factory() as session:
+        assert session.get(Product, product_id).canonical_url == trusted.canonical_url
+        assert session.get(Product, product_id).requested_url == old
+        assert session.get(Setting, dell_entry_key(product_id)) is None
+        assert session.scalar(select(func.count(Observation.id)).where(
+            Observation.trusted.is_(True)
+        )) == 1
+
+
+@pytest.mark.anyio
+async def test_all_four_category_entries_fail_once_and_keep_notification_policy(laptop_entry_check):
+    service, factory, product_id, old, new, trusted = laptop_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+    service.pipeline = Pipeline()
+    first = await service.check_product(product_id, "scheduled")
+    assert first.status == "failed" and first.events == []
+    assert calls == [old, trusted.canonical_url, new, new + "/aa18250_reg_01"]
+    with factory() as session:
+        assert session.get(Product, product_id).consecutive_failures == 1
+        assert session.scalar(select(func.count(CheckRun.id)).where(
+            CheckRun.trigger == "scheduled"
+        )) == 1
+        run = session.scalar(select(CheckRun).where(CheckRun.trigger == "scheduled"))
+        assert "官方分类" in run.error_message and "HTTP 403" in run.error_message
+        assert "https://" not in run.error_message
+    second = await service.check_product(product_id, "scheduled")
+    assert [event.kind for event in second.events] == ["check_failed"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error", [
+    AcquisitionError("Rate limited", status_code=429),
+    AcquisitionError("Server error", status_code=500),
+    AcquisitionError("Timed out"),
+    ExtractionError("Configuration mismatch"),
+    UnsafeUrlError("Unsafe public IP"),
+])
+async def test_category_recovery_stops_on_non_entry_errors(laptop_entry_check, error):
+    service, _, product_id, old, _, _ = laptop_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            raise error
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == "failed"
+    assert calls == [old]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [429, 500])
+async def test_category_recovery_stops_if_later_entry_is_rate_limited(laptop_entry_check, status):
+    service, _, product_id, old, _, trusted = laptop_entry_check
+    calls = []
+
+    class Pipeline:
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(str(url))
+            code = 403 if len(calls) == 1 else status
+            raise AcquisitionError(f"HTTP {code}", status_code=code)
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(product_id, "scheduled")
+    assert outcome.status == "failed"
+    assert calls == [old, trusted.canonical_url]
 
 
 @pytest.mark.anyio

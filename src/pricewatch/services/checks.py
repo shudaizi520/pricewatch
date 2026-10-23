@@ -12,16 +12,21 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.adapters.base import ExtractionError
 from pricewatch.adapters.registry import AdapterRegistry
-from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product
+from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product, Setting
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductConfiguration, ProductSnapshot
 from pricewatch.fetching.browser import AcquisitionPipeline, DellConfiguratorUnavailable
+from pricewatch.fetching.dell_entries import dell_check_entries
 from pricewatch.fetching.http import AcquisitionError
 from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
 FAILURE_RETRY_DELAY = timedelta(minutes=30)
+
+
+def dell_entry_key(product_id: int) -> str:
+    return f"dell_entry_preference:{product_id}"
 
 
 def event_key(event: DomainEvent) -> str:
@@ -79,6 +84,7 @@ class CheckService:
         snapshot: ProductSnapshot,
         observed_at: datetime | None = None,
         trigger: CheckTrigger = "manual",
+        successful_entry: URL | None = None,
     ) -> CheckOutcome:
         now = observed_at or datetime.now(UTC)
         events: list[DomainEvent] = []
@@ -285,6 +291,22 @@ class CheckService:
                     product.configuration_fingerprint = fingerprint
                     product.configuration = snapshot.configuration.as_record()
                     product.last_success_at = now
+                    if (
+                        product.source_site == "dell-us" and product.dell_selection
+                        and successful_entry is not None
+                        and successful_entry.scheme == "https"
+                        and successful_entry.host in {"www.dell.com", "dell.com"}
+                        and successful_entry.port in {None, 443}
+                        and successful_entry.path.startswith("/en-us/shop/")
+                        and not successful_entry.userinfo
+                        and not successful_entry.query and not successful_entry.fragment
+                    ):
+                        entry_setting = session.get(Setting, dell_entry_key(product_id))
+                        if entry_setting is None:
+                            entry_setting = Setting(key=dell_entry_key(product_id))
+                            session.add(entry_setting)
+                        if entry_setting.value_text != str(successful_entry):
+                            entry_setting.value_text = str(successful_entry)
             if product.status == "needs_attention":
                 if pending is None or pending.configuration_fingerprint != fingerprint:
                     session.add(
@@ -391,45 +413,35 @@ class CheckService:
             sku = product.sku
             site = product.source_site
             dell_selection = product.dell_selection
-        first_entry_failure = None
+            entry_setting = session.get(Setting, dell_entry_key(product_id))
+            preferred_entry = entry_setting.value_text if entry_setting else None
+        entry_failures: list[str] = []
+        current_entry_label = "直达入口"
+        successful_entry = None
         try:
             adapter = self.registry.for_url(url)
             if dell_selection:
-                prefer_original = (
-                    site == "dell-us"
-                    and bool(sku)
-                    and original_url != url
-                    and original_url.scheme == url.scheme == "https"
-                    and original_url.host == url.host
-                    and url.host in {"www.dell.com", "dell.com"}
-                    and original_url.port == url.port
-                    and not original_url.userinfo
-                    and not url.userinfo
-                    and original_url.path.startswith("/en-us/shop/")
-                    and url.path.startswith("/en-us/shop/")
-                )
-                try:
-                    _, snapshot = await self.pipeline.acquire(
-                        original_url if prefer_original else url,
-                        adapter,
-                        dell_selection=dell_selection,
-                    )
-                except AcquisitionError as error:
-                    if not prefer_original or (
-                        error.status_code not in {403, 404, 410}
-                        and not isinstance(error, DellConfiguratorUnavailable)
-                    ):
-                        raise
-                    # A family can also be HTTP 200 but expose only fixed offers.
-                    # Try the saved SKU entry once, without relaxing quote/identity guards.
-                    first_entry_failure = (
-                        f"原始入口: {error}"
-                        if isinstance(error, DellConfiguratorUnavailable)
-                        else f"原始入口 HTTP {error.status_code}"
-                    )
-                    _, snapshot = await self.pipeline.acquire(
-                        url, adapter, dell_selection=dell_selection
-                    )
+                entries = (dell_check_entries(original_url, url, sku, preferred_entry)
+                           if site == "dell-us" else [("直达入口", url)])
+                for index, (current_entry_label, entry_url) in enumerate(entries):
+                    try:
+                        _, snapshot = await self.pipeline.acquire(
+                            entry_url, adapter, dell_selection=dell_selection,
+                        )
+                        successful_entry = entry_url
+                        break
+                    except AcquisitionError as error:
+                        if index == len(entries) - 1 or (
+                            error.status_code not in {403, 404, 410}
+                            and not isinstance(error, DellConfiguratorUnavailable)
+                        ):
+                            raise
+                        # Keep entry failure summaries, not URLs/cookies, and count
+                        # all bounded entry attempts as one logical check.
+                        reason = (str(error)[:40] if isinstance(error, DellConfiguratorUnavailable)
+                                  else f"HTTP {error.status_code}")
+                        separator = ": " if isinstance(error, DellConfiguratorUnavailable) else " "
+                        entry_failures.append(f"{current_entry_label}{separator}{reason}")
                 if any(
                     snapshot.configuration.extras.get(group) != label
                     for group, label in dell_selection.items()
@@ -452,11 +464,14 @@ class CheckService:
                 if isinstance(error, (AcquisitionError, ExtractionError, UnsafeUrlError))
                 else None
             )
-            if first_entry_failure:
-                detail = f"{first_entry_failure}; 直达入口: {detail or type(error).__name__}"[:240]
+            if entry_failures:
+                final_failure = f"{current_entry_label}: {detail or type(error).__name__}"
+                detail = "; ".join([*entry_failures, final_failure])[:240]
             return self.record_failure(product_id, type(error).__name__, trigger, detail)
         else:
-            return self.accept_snapshot(product_id, snapshot, trigger=trigger)
+            return self.accept_snapshot(
+                product_id, snapshot, trigger=trigger, successful_entry=successful_entry,
+            )
         finally:
             # BeautifulSoup and lxml build cyclic DOM graphs. A price check is an infrequent,
             # bounded job, so collect those transient graphs immediately instead of retaining
