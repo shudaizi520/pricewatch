@@ -89,6 +89,7 @@ def test_image_non_root_one_worker_and_graphical_chromium():
     dockerfile = (ROOT / "Dockerfile").read_text()
     startup = (ROOT / "docker/start.sh").read_text()
     assert "USER 10001:10001" in dockerfile
+    assert "apt libapt-pkg7.0" in dockerfile
     assert "playwright install chromium" in dockerfile
     assert 'CMD ["sh", "/app/docker/start.sh"]' in dockerfile
     assert "python -m pricewatch.bootstrap" in startup
