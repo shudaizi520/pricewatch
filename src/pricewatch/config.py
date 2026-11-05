@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     external_url: AnyHttpUrl | None = None
     dell_socks_proxy_host: IPvAnyAddress | None = None
     dell_socks_proxy_port: int | None = Field(default=None, ge=1, le=65535)
+    dell_direct_fallback: bool = False
 
     @model_validator(mode="after")
     def require_complete_dell_proxy(self) -> Self:

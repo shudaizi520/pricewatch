@@ -49,7 +49,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     checker = CheckService(
         session_factory,
-        AcquisitionPipeline(HttpFetcher(), BrowserFetcher(upstream_socks=upstream_socks)),
+        AcquisitionPipeline(
+            HttpFetcher(), BrowserFetcher(upstream_socks=upstream_socks),
+            direct_browser=(BrowserFetcher() if resolved.dell_direct_fallback and upstream_socks
+                            else None),
+        ),
     )
     scheduler = SchedulerService(session_factory, checker)
     backups = BackupService(session_factory, resolved.data_dir)

@@ -868,6 +868,127 @@ async def test_both_entry_failures_keep_retry_and_notification_policy(dell_entry
         assert "$2,999.99" not in alert.message_text
 
 
+@pytest.mark.anyio
+async def test_authorized_direct_fallback_runs_once_after_all_proxy_entries_are_403(
+    dell_entry_check,
+):
+    service, factory, pid, canonical, original, trusted = dell_entry_check
+    calls = []
+    with factory.begin() as session:
+        product = session.get(Product, pid)
+        product.consecutive_failures = 2
+        product.failure_reported = True
+
+    class Pipeline:
+        allow_dell_direct_fallback = True
+
+        async def acquire(self, url, _adapter, dell_selection):
+            calls.append(("proxy", str(url)))
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+        async def acquire_direct(self, url, _adapter, dell_selection):
+            calls.append(("direct", str(url)))
+            assert dell_selection == {"Graphics Card": "RTX 5090"}
+            return None, replace(trusted, price=Money("USD", 279999))
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(pid, "manual")
+    assert outcome.status == "ok"
+    assert calls == [("proxy", original), ("proxy", canonical), ("direct", original)]
+    assert [e.kind for e in outcome.events] == ["price_changed", "check_recovered"]
+    with factory() as session:
+        run = session.scalar(select(CheckRun).order_by(CheckRun.id.desc()))
+        assert run.acquisition_method == "browser-direct"
+        assert session.get(Product, pid).consecutive_failures == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("enabled,first_status", [(False, 403), (True, 429),
+                                                 (True, 500), (True, 404), (True, None)])
+async def test_direct_fallback_needs_opt_in_and_all_proxy_attempts_to_be_403(
+    dell_entry_check, enabled, first_status,
+):
+    service, _, pid, _, _, _ = dell_entry_check
+    direct_calls = []
+
+    class Pipeline:
+        allow_dell_direct_fallback = enabled
+        attempts = 0
+
+        async def acquire(self, url, _adapter, dell_selection):
+            self.attempts += 1
+            status = first_status if self.attempts == 1 else 403
+            raise AcquisitionError("Unavailable", status_code=status)
+
+        async def acquire_direct(self, *_args, **_kwargs):
+            direct_calls.append(True)
+            raise AssertionError("Unauthorized direct request")
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(pid, "manual")
+    assert outcome.status == "failed"
+    assert direct_calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mutation", ["sku", "gpu", "currency", "selection"])
+async def test_direct_fallback_cannot_change_monitored_quote(dell_entry_check, mutation):
+    service, factory, pid, _, _, trusted = dell_entry_check
+    current = replace(trusted, price=Money("USD", 279999))
+    if mutation == "sku":
+        current = replace(current, identity=ProductIdentity("dell-us", "other_sku"))
+    elif mutation == "currency":
+        current = replace(current, price=Money("EUR", 279999))
+    else:
+        current = replace(current, configuration=ProductConfiguration(
+            gpu="RTX 5080", extras={"Graphics Card": "RTX 5080" if mutation == "selection"
+                                  else "RTX 5090"},
+        ))
+
+    class Pipeline:
+        allow_dell_direct_fallback = True
+
+        async def acquire(self, *_args, **_kwargs):
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+        async def acquire_direct(self, *_args, **_kwargs):
+            return None, current
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(pid, "manual")
+    assert outcome.status == ("failed" if mutation == "selection" else "needs_attention")
+    with factory() as session:
+        assert session.scalar(select(func.count(Observation.id)).where(
+            Observation.trusted.is_(True)
+        )) == 1
+
+
+@pytest.mark.anyio
+async def test_direct_fallback_failure_is_one_failed_check_with_both_routes(dell_entry_check):
+    service, factory, pid, _, _, _ = dell_entry_check
+    calls = []
+
+    class Pipeline:
+        allow_dell_direct_fallback = True
+
+        async def acquire(self, *_args, **_kwargs):
+            raise AcquisitionError("HTTP 403", status_code=403)
+
+        async def acquire_direct(self, *_args, **_kwargs):
+            calls.append(True)
+            raise AcquisitionError("浏览器操作超时")
+
+    service.pipeline = Pipeline()
+    outcome = await service.check_product(pid, "manual")
+    assert outcome.status == "failed"
+    assert calls == [True]
+    with factory() as session:
+        assert session.get(Product, pid).consecutive_failures == 1
+        run = session.scalar(select(CheckRun).order_by(CheckRun.id.desc()))
+        assert "直连备用" in run.error_message and "HTTP 403" in run.error_message
+        assert "超时" in run.error_message
+
+
 @pytest.fixture
 def laptop_entry_check(dell_entry_check):
     service, factory, product_id, _, _, trusted = dell_entry_check

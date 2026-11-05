@@ -338,9 +338,36 @@ class BrowserFetcher:
 
 
 class AcquisitionPipeline:
-    def __init__(self, http: HttpFetcher, browser: BrowserFetcher) -> None:
+    def __init__(
+        self, http: HttpFetcher, browser: BrowserFetcher,
+        direct_browser: BrowserFetcher | None = None,
+    ) -> None:
         self.http = http
         self.browser = browser
+        self.direct_browser = direct_browser
+
+    @property
+    def allow_dell_direct_fallback(self) -> bool:
+        return (
+            self.direct_browser is not None
+            and self.direct_browser.upstream_socks is None
+            and self.browser.upstream_socks is not None
+        )
+
+    async def acquire_direct(
+        self, url: URL, adapter: ProductAdapter, dell_selection: dict[str, str],
+    ) -> tuple[AcquiredPage, ProductSnapshot]:
+        if not (
+            self.allow_dell_direct_fallback and self.direct_browser is not None
+            and dell_selection and url.scheme == "https"
+            and url.host in {"www.dell.com", "dell.com"}
+            and url.port in {None, 443} and not url.userinfo
+            and not url.query and not url.fragment
+            and url.path.startswith("/en-us/shop/")
+        ):
+            raise AcquisitionError("戴尔直连备用未授权或目标不符合安全限制")
+        page = await self.direct_browser.fetch(url, dell_selection=dell_selection)
+        return page, adapter.extract(page)
 
     async def acquire(
         self,

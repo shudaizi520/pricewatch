@@ -1,6 +1,6 @@
 services:
   pricewatch:
-    image: ghcr.io/shudaizi520/pricewatch:1.0.18
+    image: ghcr.io/shudaizi520/pricewatch:1.0.19
     restart: unless-stopped
     init: true
     shm_size: 512mb
@@ -11,6 +11,7 @@ services:
       PRICEWATCH_EXTERNAL_URL: ${PRICEWATCH_EXTERNAL_URL:-}
       PRICEWATCH_DELL_SOCKS_PROXY_HOST: ${PRICEWATCH_DELL_SOCKS_PROXY_HOST:-}
       PRICEWATCH_DELL_SOCKS_PROXY_PORT: ${PRICEWATCH_DELL_SOCKS_PROXY_PORT:-}
+      PRICEWATCH_DELL_DIRECT_FALLBACK: ${PRICEWATCH_DELL_DIRECT_FALLBACK:-false}
     volumes:
       - pricewatch-data:/data
     healthcheck:

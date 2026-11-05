@@ -6,7 +6,7 @@
 
 ## 从 GitHub 镜像空白安装
 
-`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.18`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
+`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.19`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
 
 1. 把 [compose.ghcr.yml](compose.ghcr.yml) 保存到一个新目录，在该目录运行 `docker compose -f compose.ghcr.yml pull`，再运行 `docker compose -f compose.ghcr.yml up -d`。
 2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；空白安装打开首页会自动进入创建管理员页面，首次填写账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
@@ -24,7 +24,9 @@
    当前 TrueNAS 试用实例在本地镜像重建失败后，临时将 `./src` 只读挂载到容器的 `/app/src`。需要复现时，可显式启用 `docker-compose.source.yml` 覆盖文件；正式使用版本化镜像升级或回退时不要启用此覆盖文件，以免宿主机源码覆盖镜像代码。依赖变更仍须重建镜像。
 4. 若反向代理不在 TrueNAS 本机，先把 `.env` 中的 `PRICEWATCH_BIND` 改为仅反代能访问的 TrueNAS 局域网地址，再配置反代。对公网务必使用 HTTPS，将 `.env` 的 `PRICEWATCH_EXTERNAL_URL` 设为完整 HTTPS 地址，再执行 `docker compose up -d`。在反代传递 `Host`、`X-Forwarded-Proto`，并限制管理页面的公开访问范围。若代理与容器同网络但不在主机回环上，需要按实际网络拓扑调整端口绑定。
 
-如果美国戴尔对 NAS 的直连请求返回 403，可选填 `PRICEWATCH_DELL_SOCKS_PROXY_HOST`（NAS 容器可访问的代理 IP）和 `PRICEWATCH_DELL_SOCKS_PROXY_PORT`。两项必须一起设置；只用于美国戴尔的浏览器取价，不影响其他商店，也不会改变每张卡片的检查时间。应用仍先校验目标域名解析得到的公网 IP，再通过 SOCKS5 代理连接；代理不可用时会报告失败，不会偷偷改走直连或写入猜测价格。若代理无需认证且监听局域网，务必在软路由防火墙中只允许 NAS 访问该端口，切勿向公网开放。
+如果美国戴尔对 NAS 的直连请求返回 403，可选填 `PRICEWATCH_DELL_SOCKS_PROXY_HOST`（NAS 容器可访问的代理 IP）和 `PRICEWATCH_DELL_SOCKS_PROXY_PORT`。两项必须一起设置；只用于美国戴尔的浏览器取价，不影响其他商店，也不会改变每张卡片的检查时间。应用仍先校验目标域名解析得到的公网 IP，再通过 SOCKS5 代理连接；默认不会改走直连或写入猜测价格。若代理无需认证且监听局域网，务必在软路由防火墙中只允许 NAS 访问该端口，切勿向公网开放。
+
+可选的 `PRICEWATCH_DELL_DIRECT_FALLBACK` 默认是 `false`。明确允许戴尔看到部署主机的直连公网地址后，才设为 `true` 并重新创建应用容器；设回 `false` 即可关闭。启用后仍先走原代理，只有已绑定配置的美国戴尔商品所有有限入口均返回 HTTP 403，才额外尝试一次直连取价。直连保留原 SKU、配置、公网 IP 安全校验、币种和真实报价校验，检查记录标为 `browser-direct`；不采用缓存价格冒充成功。429、超时、5xx、配置不符或安全检查失败均不触发直连，也不修改 DNS、路由器或代理参数。
 
 原 `docker-compose.yml` 默认本地构建 `pricewatch:local`，保留给源码部署；从镜像空白安装请使用上面的独立 `compose.ghcr.yml`，不要与 `docker-compose.source.yml` 混用。不要依赖 `latest` 回滚。
 
@@ -72,7 +74,9 @@
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.18`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.19`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+
+1.0.19 增加默认关闭的、须明确授权的单次直连备用，只适用于美国戴尔已绑定配置且代理入口全部返回 403 的检查。它不替换原代理参数，不放宽 SKU、硬件、币种及真实报价校验；可随时关闭。沿用 1.0.18 的失败恢复调度、重启保护和通知规则，不能保证第三方永不拒绝请求。
 
 1.0.18 补齐了持续失败后的恢复调度：失败提醒后不再只等到第二天，且重启不会丢失第二次及后续失败的恢复计划。已在新分类建立的笔记本卡片也会尝试同型号旧分类入口，仍最多四个、同 SKU、同配置且仅对明确入口失败回退；429、配置不符、安全检查失败仍立即停止当前检查。浏览器超时和标准网络错误码会脱敏报告，不输出 URL 参数、Cookie 或密钥。第三方可以拒绝所有入口，本版本不会伪造成功或切换代理出口。
 

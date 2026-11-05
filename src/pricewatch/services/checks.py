@@ -85,6 +85,7 @@ class CheckService:
         observed_at: datetime | None = None,
         trigger: CheckTrigger = "manual",
         successful_entry: URL | None = None,
+        acquisition_method: str | None = None,
     ) -> CheckOutcome:
         now = observed_at or datetime.now(UTC)
         events: list[DomainEvent] = []
@@ -343,6 +344,7 @@ class CheckService:
                     product_id=product_id,
                     trigger=trigger,
                     outcome="ok" if product.status != "needs_attention" else "needs_attention",
+                    acquisition_method=acquisition_method,
                     created_at=now,
                 )
             )
@@ -420,11 +422,13 @@ class CheckService:
         entry_failures: list[str] = []
         current_entry_label = "直达入口"
         successful_entry = None
+        acquisition_method = None
         try:
             adapter = self.registry.for_url(url)
             if dell_selection:
                 entries = (dell_check_entries(original_url, url, sku, preferred_entry)
                            if site == "dell-us" else [("直达入口", url)])
+                all_proxy_denied = True
                 for index, (current_entry_label, entry_url) in enumerate(entries):
                     try:
                         _, snapshot = await self.pipeline.acquire(
@@ -433,6 +437,23 @@ class CheckService:
                         successful_entry = entry_url
                         break
                     except AcquisitionError as error:
+                        all_proxy_denied = all_proxy_denied and error.status_code == 403
+                        if (
+                            index == len(entries) - 1 and site == "dell-us"
+                            and all_proxy_denied
+                            and getattr(self.pipeline, "allow_dell_direct_fallback", False)
+                        ):
+                            entry_failures.append(f"{current_entry_label} HTTP 403")
+                            current_entry_label = "直连备用"
+                            direct_target = (original_url if any(
+                                candidate == original_url for _, candidate in entries
+                            ) else url)
+                            _, snapshot = await self.pipeline.acquire_direct(
+                                direct_target, adapter, dell_selection=dell_selection,
+                            )
+                            successful_entry = direct_target
+                            acquisition_method = "browser-direct"
+                            break
                         if index == len(entries) - 1 or (
                             error.status_code not in {403, 404, 410}
                             and not isinstance(error, DellConfiguratorUnavailable)
@@ -473,6 +494,7 @@ class CheckService:
         else:
             return self.accept_snapshot(
                 product_id, snapshot, trigger=trigger, successful_entry=successful_entry,
+                acquisition_method=acquisition_method,
             )
         finally:
             # BeautifulSoup and lxml build cyclic DOM graphs. A price check is an infrequent,
