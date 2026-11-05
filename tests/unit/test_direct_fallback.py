@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from httpx import URL
@@ -51,3 +52,17 @@ async def test_direct_fallback_without_opt_in_cannot_fetch_even_a_valid_dell_url
     with pytest.raises(AcquisitionError, match="未授权"):
         await pipeline.acquire_direct(URL("https://www.dell.com/en-us/shop/spd/model"), None,
                                       {"Graphics Card": "RTX 5090"})
+
+
+@pytest.mark.anyio
+async def test_authorized_direct_fetch_preserves_target_and_selection_and_extracts_live_page():
+    page, snapshot = object(), object()
+    direct = SimpleNamespace(upstream_socks=None, fetch=AsyncMock(return_value=page))
+    primary = BrowserFetcher(upstream_socks=("192.0.2.1", 1080))
+    pipeline = AcquisitionPipeline(HttpFetcher(), primary, direct_browser=direct)
+    adapter = SimpleNamespace(extract=Mock(return_value=snapshot))
+    target = URL("https://www.dell.com/en-us/shop/spd/model/original-sku")
+    selection = {"Graphics Card": "RTX 5090"}
+    assert await pipeline.acquire_direct(target, adapter, selection) == (page, snapshot)
+    direct.fetch.assert_awaited_once_with(target, dell_selection=selection)
+    adapter.extract.assert_called_once_with(page)

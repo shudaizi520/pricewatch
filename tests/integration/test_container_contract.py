@@ -25,26 +25,32 @@ def test_compose_single_service_persistent_data_and_healthcheck():
     assert any(str(volume).endswith(":/data") for volume in service["volumes"])
     assert "http://127.0.0.1:8080/healthz" in str(service["healthcheck"]["test"])
     assert service["restart"] == "unless-stopped"
+    assert service["environment"]["PRICEWATCH_DELL_DIRECT_FALLBACK"] == (
+        "${PRICEWATCH_DELL_DIRECT_FALLBACK:-false}"
+    )
 
 
 def test_ghcr_compose_installs_without_source_or_manual_secret():
     config = yaml.safe_load((ROOT / "compose.ghcr.yml").read_text())
     assert set(config["services"]) == {"pricewatch"}
     service = config["services"]["pricewatch"]
-    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.18"
+    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.19"
     assert "build" not in service
     assert service["volumes"] == ["pricewatch-data:/data"]
     assert "pricewatch-data" in config["volumes"]
     assert "PRICEWATCH_APP_SECRET_KEY" not in service.get("environment", {})
     assert service["ports"] == ["${PRICEWATCH_BIND:-127.0.0.1}:8080:8080"]
     assert service["restart"] == "unless-stopped"
+    assert service["environment"]["PRICEWATCH_DELL_DIRECT_FALLBACK"] == (
+        "${PRICEWATCH_DELL_DIRECT_FALLBACK:-false}"
+    )
     assert "http://127.0.0.1:8080/healthz" in str(service["healthcheck"]["test"])
 
 
 def test_package_and_health_version_match_source_release():
     package = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    assert package["project"]["version"] == "1.0.18"
-    assert __version__ == "1.0.18"
+    assert package["project"]["version"] == "1.0.19"
+    assert __version__ == "1.0.19"
 
 
 def test_release_workflow_publishes_github_release_after_image():
