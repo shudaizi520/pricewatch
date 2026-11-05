@@ -379,6 +379,42 @@ def test_upgrade_reports_a_preexisting_second_failure_on_the_next_failure(check_
     assert [event.kind for event in outcome.events] == ["check_failed"]
 
 
+def test_repeated_failures_keep_bounded_recovery_after_alert_without_daily_wait(check_service):
+    service, factory, product_id = check_service
+    service.accept_snapshot(product_id, snapshot())
+    steps = [("2026-11-05 02:10:00", "2026-11-05T02:40:00+00:00"),
+             ("2026-11-05 02:40:00", "2026-11-05T03:40:00+00:00"),
+             ("2026-11-05 03:40:00", "2026-11-05T06:40:00+00:00"),
+             ("2026-11-05 06:40:00", "2026-11-05T09:40:00+00:00")]
+    for index, (now, expected) in enumerate(steps, 1):
+        with freeze_time(now):
+            outcome = service.record_failure(product_id, "blocked", error_message="HTTP 403")
+        assert outcome.product.next_check_at == datetime.fromisoformat(expected)
+        assert [event.kind for event in outcome.events] == (["check_failed"] if index == 2 else [])
+    with factory() as session:
+        assert session.scalar(select(func.count(NotificationDelivery.id)).where(
+            NotificationDelivery.event_type == "check_failed"
+        )) == 1
+
+
+@freeze_time("2026-11-05 02:00:00")
+def test_failure_recovery_does_not_delay_nearer_scheduled_check_or_enable_paused(check_service):
+    service, factory, product_id = check_service
+    with factory.begin() as session:
+        p = session.get(Product, product_id)
+        p.consecutive_failures = 4
+        p.next_check_at = datetime(2026, 11, 5, 2, 10, tzinfo=UTC)
+    outcome = service.record_failure(product_id, "blocked")
+    expected = datetime(2026, 11, 5, 2, 10, tzinfo=UTC)
+    assert outcome.product.next_check_at.replace(tzinfo=UTC) == expected
+    with factory.begin() as session:
+        p = session.get(Product, product_id)
+        p.status = "paused"
+        p.next_check_at = None
+    outcome = service.record_failure(product_id, "blocked", trigger="manual")
+    assert outcome.product.next_check_at is None
+
+
 def test_generic_without_sku_pauses_if_product_name_changes(settings):
     engine, factory = create_engine_and_session(settings)
     Base.metadata.create_all(engine)

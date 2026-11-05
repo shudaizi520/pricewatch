@@ -58,6 +58,12 @@ def _check_entries(original: URL, canonical: URL, sku: str | None) -> list[Entry
         family = canonical.copy_with(path=f"/en-us/shop/dell-laptops/spd/{saved[2]}")
         entries += [("官方分类入口", family),
                     ("官方分类直达入口", family.copy_with(path=f"{family.path}/{sku}"))]
+    elif first[1] == saved[1] == "dell-laptops":
+        # Current-category cards need the same bounded same-model fallback as
+        # legacy cards; a category can fail temporarily in either direction.
+        family = canonical.copy_with(path=f"/en-us/shop/laptop-computers/spd/{saved[2]}")
+        entries += [("原分类入口", family),
+                    ("原分类直达入口", family.copy_with(path=f"{family.path}/{sku}"))]
 
     # Never scan arbitrary paths, generate new SKUs, or retry a duplicate entry.
     unique: list[Entry] = []

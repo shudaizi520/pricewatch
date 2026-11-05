@@ -352,3 +352,68 @@ async def test_success_before_retry_restores_daily_schedule(settings):
     finally:
         await scheduler.stop()
         engine.dispose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failures", [2, 4])
+@pytest.mark.parametrize("retry_at", [
+    datetime(2026, 11, 5, 2, 20, tzinfo=UTC),
+    datetime(2026, 11, 5, 1, 50, tzinfo=UTC),
+])
+@freeze_time("2026-11-05 02:00:00", real_asyncio=True)
+async def test_restart_preserves_later_failure_recovery_instead_of_waiting_next_day(
+    settings, failures, retry_at,
+):
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        session.add(Product(id=1, source_site="dell-us", requested_url="https://www.dell.com/x",
+                            consecutive_failures=failures, next_check_at=retry_at))
+        session.add(Setting(key="product_check_time:1", value_text="09:00"))
+    scheduler = SchedulerService(factory, None)
+    scheduler.start()
+    try:
+        with factory() as session:
+            assert session.get(Product, 1).next_check_at.replace(tzinfo=UTC) == retry_at
+    finally:
+        await scheduler.stop()
+        engine.dispose()
+
+
+@pytest.mark.anyio
+@freeze_time("2026-11-05 02:00:00", real_asyncio=True)
+async def test_worker_keeps_second_failure_recovery_and_runs_it_when_due(settings):
+    from pricewatch.services.checks import CheckService
+    engine, factory = create_engine_and_session(settings)
+    Base.metadata.create_all(engine)
+    with factory.begin() as session:
+        session.add(Product(id=1, source_site="dell-us", requested_url="https://www.dell.com/x",
+                            consecutive_failures=1))
+        session.add(Setting(key="product_check_time:1", value_text="09:00"))
+    service = CheckService(factory)
+
+    class Checker:
+        async def check_product(self, product_id, trigger):
+            return service.record_failure(product_id, "blocked", trigger, "HTTP 403")
+
+    scheduler = SchedulerService(factory, Checker())
+    scheduler.start()
+    try:
+        with factory.begin() as session:
+            session.get(Product, 1).next_check_at = datetime(2026, 11, 5, 2, 0, tzinfo=UTC)
+        await scheduler.request_check(1, "scheduled").future
+        with factory() as session:
+            p = session.get(Product, 1)
+            assert p.consecutive_failures == 2
+            assert p.next_check_at.replace(tzinfo=UTC) == datetime(2026, 11, 5, 3, 0, tzinfo=UTC)
+        with freeze_time("2026-11-05 03:00:01", real_asyncio=True):
+            await scheduler.run_due()
+            await asyncio.wait_for(scheduler.queue.join(), 2)
+            with factory() as session:
+                p = session.get(Product, 1)
+                assert p.consecutive_failures == 3
+                expected = datetime(2026, 11, 5, 6, 0, 1, tzinfo=UTC)
+                assert p.next_check_at.replace(tzinfo=UTC) == expected
+    finally:
+        await scheduler.stop()
+        engine.dispose()

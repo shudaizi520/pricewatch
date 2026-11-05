@@ -14,7 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from pricewatch.db.models import CheckRun, Product, Setting
-from pricewatch.services.checks import FAILURE_RETRY_DELAY, CheckTrigger
+from pricewatch.domain.recovery import failure_retry_at
+from pricewatch.services.checks import CheckTrigger
 
 _BEIJING = ZoneInfo("Asia/Shanghai")
 _LOGGER = logging.getLogger(__name__)
@@ -70,15 +71,16 @@ class SchedulerService:
                 if setting is None or not setting.value_text:
                     product.status = "paused"
                     product.next_check_at = None
-                elif product.consecutive_failures == 1:
+                elif product.consecutive_failures > 0:
                     retry_at = product.next_check_at
                     if retry_at is not None and retry_at.tzinfo is None:
                         retry_at = retry_at.replace(tzinfo=UTC)
-                    product.next_check_at = (
-                        retry_at
-                        if retry_at is not None and retry_at <= now + FAILURE_RETRY_DELAY
-                        else now + FAILURE_RETRY_DELAY
+                    limit = failure_retry_at(
+                        now, product.consecutive_failures, next_due(now, setting.value_text),
                     )
+                    # Preserve an overdue retry so the queue catches up once after
+                    # restart, rather than silently postponing it another day.
+                    product.next_check_at = min(retry_at, limit) if retry_at else limit
                 else:
                     product.next_check_at = next_due(now, setting.value_text)
         self.worker = asyncio.create_task(self._run())
@@ -176,8 +178,10 @@ class SchedulerService:
             now = datetime.now(UTC)
             product.consecutive_failures += 1
             product.last_checked_at = now
-            if product.consecutive_failures == 1 and product.status == "active":
-                product.next_check_at = now + FAILURE_RETRY_DELAY
+            if product.status == "active":
+                product.next_check_at = failure_retry_at(
+                    now, product.consecutive_failures, product.next_check_at,
+                )
             session.add(
                 CheckRun(
                     product_id=product_id,
@@ -211,7 +215,7 @@ class SchedulerService:
                     keep_failure_retry = (
                         product is not None
                         and product.status == "active"
-                        and product.consecutive_failures == 1
+                        and product.consecutive_failures > 0
                     )
                 if product is not None and not keep_failure_retry:
                     self.schedule_product(product_id)

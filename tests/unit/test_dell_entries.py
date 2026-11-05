@@ -26,8 +26,8 @@ def test_previously_verified_new_category_is_reused_before_old_original():
     ]
 
 
-def test_existing_new_category_does_not_generate_random_category_variants():
-    assert urls(NEW, NEW + "/" + SKU) == [NEW, NEW + "/" + SKU]
+def test_current_category_can_recover_through_same_model_legacy_category():
+    assert urls(NEW, NEW + "/" + SKU) == [NEW, NEW + "/" + SKU, OLD, OLD + "/" + SKU]
 
 
 def test_identical_family_input_is_deduplicated_and_remains_bounded():

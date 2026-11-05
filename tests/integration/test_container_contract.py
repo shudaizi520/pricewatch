@@ -31,7 +31,7 @@ def test_ghcr_compose_installs_without_source_or_manual_secret():
     config = yaml.safe_load((ROOT / "compose.ghcr.yml").read_text())
     assert set(config["services"]) == {"pricewatch"}
     service = config["services"]["pricewatch"]
-    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.17"
+    assert service["image"] == "ghcr.io/shudaizi520/pricewatch:1.0.18"
     assert "build" not in service
     assert service["volumes"] == ["pricewatch-data:/data"]
     assert "pricewatch-data" in config["volumes"]
@@ -43,8 +43,8 @@ def test_ghcr_compose_installs_without_source_or_manual_secret():
 
 def test_package_and_health_version_match_source_release():
     package = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    assert package["project"]["version"] == "1.0.17"
-    assert __version__ == "1.0.17"
+    assert package["project"]["version"] == "1.0.18"
+    assert __version__ == "1.0.18"
 
 
 def test_release_workflow_publishes_github_release_after_image():
@@ -89,6 +89,7 @@ def test_image_non_root_one_worker_and_graphical_chromium():
     dockerfile = (ROOT / "Dockerfile").read_text()
     startup = (ROOT / "docker/start.sh").read_text()
     assert "USER 10001:10001" in dockerfile
+    assert "apt libapt-pkg7.0" in dockerfile
     assert "playwright install chromium" in dockerfile
     assert 'CMD ["sh", "/app/docker/start.sh"]' in dockerfile
     assert "python -m pricewatch.bootstrap" in startup

@@ -3,7 +3,7 @@
 import gc
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Literal
 
 from httpx import URL
@@ -15,6 +15,7 @@ from pricewatch.adapters.registry import AdapterRegistry
 from pricewatch.db.models import CheckRun, NotificationDelivery, Observation, Product, Setting
 from pricewatch.domain.events import DomainEvent
 from pricewatch.domain.products import ProductConfiguration, ProductSnapshot
+from pricewatch.domain.recovery import failure_retry_at
 from pricewatch.fetching.browser import AcquisitionPipeline, DellConfiguratorUnavailable
 from pricewatch.fetching.dell_entries import dell_check_entries
 from pricewatch.fetching.http import AcquisitionError
@@ -22,7 +23,6 @@ from pricewatch.fetching.safety import UnsafeUrlError
 from pricewatch.services.notifications import NotificationService, format_message
 
 CheckTrigger = Literal["initial", "manual", "scheduled"]
-FAILURE_RETRY_DELAY = timedelta(minutes=30)
 
 
 def dell_entry_key(product_id: int) -> str:
@@ -369,8 +369,10 @@ class CheckService:
                 raise LookupError("Product not found")
             product.consecutive_failures += 1
             product.last_checked_at = now
-            if product.consecutive_failures == 1 and product.status == "active":
-                product.next_check_at = now + FAILURE_RETRY_DELAY
+            if product.status == "active":
+                product.next_check_at = failure_retry_at(
+                    now, product.consecutive_failures, product.next_check_at,
+                )
             if product.consecutive_failures >= 2 and not product.failure_reported:
                 product.failure_reported = True
                 events.append(
