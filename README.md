@@ -6,7 +6,7 @@
 
 ## 从 GitHub 镜像空白安装
 
-`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.17`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
+`compose.ghcr.yml` 是独立的拉镜像安装文件：不需要下载源码、Dockerfile 或 `.env`。镜像固定为 `ghcr.io/shudaizi520/pricewatch:1.0.18`；需要联网的 x86-64 Docker/Compose 主机。可从 [GitHub Releases](https://github.com/shudaizi520/pricewatch/releases) 下载对应版本的安装 YAML。
 
 1. 把 [compose.ghcr.yml](compose.ghcr.yml) 保存到一个新目录，在该目录运行 `docker compose -f compose.ghcr.yml pull`，再运行 `docker compose -f compose.ghcr.yml up -d`。
 2. 默认在安装设备本机打开 `http://127.0.0.1:8080`；空白安装打开首页会自动进入创建管理员页面，首次填写账号、密码、确认密码，以后只填账号和密码。不需要额外的“注册密钥”。
@@ -42,7 +42,7 @@
 
 配置比较将两项已观察到的附带软件说明值（`Systems Management` 下的 `Additional Software and Sanbao warranty card` 与 `Dell Windows Application`）规范化为同一比较值；不是忽略整个管理软件分组，分组消失仍须确认。其它选项值、已选配置、CPU、显卡、内存、硬盘、屏幕、系统及键盘的变化仍须确认；最新真实价格发生变化时仍正常通知。
 
-自动监控开启的商品首次检查失败后会在 30 分钟后重试一次；重试仍失败才发送飞书提醒，之后继续按原每日时间检查而不重复轰炸。后续首次成功时会发送“检查已恢复”。暂停自动监控的商品不会因手动刷新失败而安排后台重试。
+自动监控开启的商品首次检查失败后会在 30 分钟后重试一次；第二次仍失败才发送飞书提醒，并在 1 小时后继续恢复检查；第三次及后续失败，每隔 3 小时再检查，直到真实成功或用户暂停。若原每日检查时间更早，则保留更早时间，不延后日常任务。持续失败不重复轰炸飞书，后续首次成功时发送带本次价格的“检查已恢复”，随后回到原每日时间。NAS/应用重启会保留失败恢复计划，过期计划在启动后的调度周期内补查一次；暂停或待确认配置的商品不会被重新启用。
 
 成功获取报价后产生的首次价格、价格变化、优惠变化、库存变化和恢复提醒都会带上本次获取的价格；失败提醒只显示商品名和失败原因，不显示旧价格或整套硬件配置。价格和状态未变化时仍不额外发送成功提醒。
 
@@ -72,7 +72,9 @@
 
 ## GitHub 发布
 
-项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.17`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+项目以 MIT 许可证公开：[GitHub 仓库](https://github.com/shudaizi520/pricewatch)。GHCR `linux/amd64` 镜像按签名的稳定标签发布，并在镜像成功发布后创建 GitHub Release，附上独立安装 YAML。空白安装请固定 `1.0.18`，不要依赖 `latest` 回滚。发布流程使用受保护的 `production` environment 和仓库变量 `RELEASE_SIGNING_PUBLIC_KEY` 验证签名标签。每次发布后删除一次性私钥，下次发布须生成新密钥并更新公钥。不要将 `.env` 或真实 Webhook 推上去。
+
+1.0.18 补齐了持续失败后的恢复调度：失败提醒后不再只等到第二天，且重启不会丢失第二次及后续失败的恢复计划。已在新分类建立的笔记本卡片也会尝试同型号旧分类入口，仍最多四个、同 SKU、同配置且仅对明确入口失败回退；429、配置不符、安全检查失败仍立即停止当前检查。浏览器超时和标准网络错误码会脱敏报告，不输出 URL 参数、Cookie 或密钥。第三方可以拒绝所有入口，本版本不会伪造成功或切换代理出口。
 
 1.0.17 补齐了同型号笔记本分类链接失效的自动恢复，并在可信报价验证成功后持久保存成功入口提示，下一次检查和重启后优先复用它，避免每天重复撞失败入口。提示仅能重排当前重新校验过的有限候选，不能添加新 URL。失败半小时重试、第二次失败提醒和成功恢复带最新价格通知保持不变。无法保证第三方站点永不拒绝访问；真实配件变化仍会要求确认，而不是静默忽略价格差异。
 

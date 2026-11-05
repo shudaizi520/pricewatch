@@ -324,8 +324,17 @@ class BrowserFetcher:
                     await browser.close()
         except AcquisitionError:
             raise
+        except PlaywrightTimeoutError as error:
+            raise AcquisitionError("浏览器操作超时") from error
+        except PlaywrightError as error:
+            # Retain only a standardized network code, never Playwright's full
+            # request trace (which can contain query strings and cookies).
+            code = re.search(r"net::ERR_[A-Z0-9_]+", str(error))
+            message = f"浏览器网络错误: {code[0]}" if code else "浏览器操作失败"
+            raise AcquisitionError(message) from error
         except Exception as error:
-            raise AcquisitionError("Browser acquisition failed") from error
+            message = f"Browser acquisition failed ({type(error).__name__})"
+            raise AcquisitionError(message) from error
 
 
 class AcquisitionPipeline:

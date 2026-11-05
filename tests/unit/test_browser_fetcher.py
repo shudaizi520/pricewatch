@@ -110,6 +110,32 @@ async def test_browser_failure_is_categorized():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("error,expected", [
+    (PlaywrightError("net::ERR_CONNECTION_RESET https://private.example/?token=secret"),
+     "浏览器网络错误: net::ERR_CONNECTION_RESET"),
+    (PlaywrightTimeoutError("Timeout while accessing private-url-and-cookie"), "浏览器操作超时"),
+    (RuntimeError("private-secret-cookie"), "Browser acquisition failed (RuntimeError)"),
+])
+async def test_browser_failure_reports_safe_cause_without_urls_or_cookies(
+    monkeypatch, error, expected,
+):
+    class FailedPlaywright:
+        async def __aenter__(self):
+            raise error
+
+        async def __aexit__(self, *_args):
+            pass
+
+    monkeypatch.setattr("pricewatch.fetching.browser.async_playwright", FailedPlaywright)
+    fetcher = BrowserFetcher(resolver=lambda _: ["93.184.216.34"])
+    with pytest.raises(AcquisitionError) as caught:
+        await fetcher.fetch(URL("https://shop.example/item"))
+    assert str(caught.value) == expected
+    assert "private" not in str(caught.value)
+    assert "secret" not in str(caught.value)
+
+
+@pytest.mark.anyio
 async def test_browser_reports_actual_blocking_status(monkeypatch):
     class FakePage:
         url = "https://shop.example/item?token=private-query"
